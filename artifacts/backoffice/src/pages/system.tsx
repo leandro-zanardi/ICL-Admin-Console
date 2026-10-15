@@ -33,6 +33,9 @@ export function AcessoNegado({ email }: { email?: string }) {
           <p className="mt-3 text-[14px] text-sidebar-foreground/70">
             Você entrou{email ? <> como <b className="text-sidebar-foreground">{email}</b></> : null}, mas este e-mail não está cadastrado no backoffice. Donos de posto são liberados pela equipe ICL, que vincula o e-mail a um posto ou a uma rede.
           </p>
+          <p className="mt-3 text-[13px] text-sidebar-foreground/60">
+            Se esta é a conta master, confirme que o e-mail principal verificado no Clerk é o mesmo configurado em <code>ADMIN_MASTER_EMAIL</code> nos Secrets do ambiente de desenvolvimento.
+          </p>
           <Btn data-testid="button-sign-out" className="mt-6" onClick={() => signOut({ redirectUrl: basePath || "/" })}><LogOut className="size-4" />Sair e usar outra conta</Btn>
         </div>
       </div>

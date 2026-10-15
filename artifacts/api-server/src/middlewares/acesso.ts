@@ -34,18 +34,41 @@ export async function exigirAcesso(req: Request, res: Response, next: NextFuncti
       res.status(403).json({ erro: "Acesso negado. O e-mail da conta não está verificado." });
       return;
     }
-    let [acesso] = await db.select().from(acessosTable).where(eq(sql`lower(${acessosTable.email})`, identidade.email));
+    let [acesso] = await db
+      .select()
+      .from(acessosTable)
+      .where(eq(sql`lower(trim(${acessosTable.email}))`, identidade.email));
     const masterEmail = process.env.ADMIN_MASTER_EMAIL?.trim().toLowerCase();
-    if (!acesso && masterEmail && identidade.email === masterEmail) {
-      [acesso] = await db
-        .insert(acessosTable)
-        .values({ email: identidade.email, nome: identidade.nome, papel: "master", escopoTipo: "todos" })
-        .onConflictDoNothing()
-        .returning();
-      if (!acesso) [acesso] = await db.select().from(acessosTable).where(eq(acessosTable.email, identidade.email));
+    if (masterEmail && identidade.email === masterEmail) {
+      if (!acesso) {
+        [acesso] = await db
+          .insert(acessosTable)
+          .values({ email: identidade.email, nome: identidade.nome, papel: "master", escopoTipo: "todos" })
+          .onConflictDoNothing()
+          .returning();
+        if (!acesso) {
+          [acesso] = await db
+            .select()
+            .from(acessosTable)
+            .where(eq(sql`lower(trim(${acessosTable.email}))`, identidade.email));
+        }
+      } else if (acesso.papel !== "master") {
+        // O e-mail de ADMIN_MASTER_EMAIL sempre prevalece sobre um cadastro de posto anterior.
+        [acesso] = await db
+          .update(acessosTable)
+          .set({ papel: "master", escopoTipo: "todos", postoId: null, cnpjRaiz: null })
+          .where(eq(acessosTable.id, acesso.id))
+          .returning();
+      }
     }
     if (!acesso) {
-      res.status(403).json({ erro: "Acesso negado. Este e-mail não está cadastrado no backoffice." });
+      logger.warn(
+        { masterEmailConfigurado: Boolean(masterEmail), emailMasterCorrespondente: Boolean(masterEmail && identidade.email === masterEmail) },
+        "Acesso negado: e-mail Clerk sem acesso cadastrado",
+      );
+      res.status(403).json({
+        erro: "Acesso negado. Para o admin master, o e-mail principal verificado no Clerk deve ser o mesmo cadastrado em ADMIN_MASTER_EMAIL no ambiente de desenvolvimento.",
+      });
       return;
     }
     const sessao: Sessao = sessaoDeAcesso(acesso);
