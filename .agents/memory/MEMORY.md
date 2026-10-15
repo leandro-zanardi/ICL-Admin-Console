@@ -1,0 +1,1 @@
+- [Backoffice vs app DB](backoffice-app-db.md) — prod app DB is older than app source; backoffice detects schema at runtime; never DDL on it

@@ -10,6 +10,30 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: sessao
+    description: Sessao e permissoes do usuario logado
+  - name: mapa
+    description: Mapa de calor e pins de postos
+  - name: denuncias
+    description: Denuncias e tratamento
+  - name: antifraude
+    description: Conformidade de denuncias
+  - name: recall
+    description: Denuncias retiradas ou resolvidas
+  - name: usuarios
+    description: Usuarios do app
+  - name: ranking
+    description: Ranking ouro, prata e bronze
+  - name: acessos
+    description: Controle de acessos ao backoffice
+  - name: painel
+    description: Indicadores
+  - name: postos
+    description: Postos
+  - name: anp
+    description: Sincronizacoes ANP
+  - name: recompensas
+    description: Recompensas e resgates
 paths:
   /healthz:
     get:
@@ -24,7 +48,570 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /me:
+    get:
+      operationId: getSessao
+      tags: [sessao]
+      summary: Papel e escopo do usuario logado
+      responses:
+        "200":
+          description: Sessao
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sessao"
+        "403":
+          description: Acesso negado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erro"
+  /mapa:
+    get:
+      operationId: getMapa
+      tags: [mapa]
+      summary: Pins de postos e pontos do mapa de calor
+      parameters:
+        - $ref: "#/components/parameters/Dias"
+        - $ref: "#/components/parameters/CategoriaFiltro"
+        - $ref: "#/components/parameters/StatusFiltro"
+      responses:
+        "200":
+          description: Mapa
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mapa"
+  /denuncias:
+    get:
+      operationId: listDenuncias
+      tags: [denuncias]
+      summary: Lista de denuncias
+      parameters:
+        - name: busca
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/StatusFiltro"
+        - $ref: "#/components/parameters/CategoriaFiltro"
+        - name: municipio
+          in: query
+          schema:
+            type: string
+        - name: faixaScore
+          in: query
+          description: Somente master
+          schema:
+            $ref: "#/components/schemas/FaixaScore"
+        - name: prazo
+          in: query
+          schema:
+            $ref: "#/components/schemas/PrazoEstado"
+        - name: decisao
+          in: query
+          schema:
+            type: string
+            enum: [procedente, improcedente, pendente]
+        - name: postoId
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Pagina de denuncias
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DenunciaPagina"
+  /denuncias/{id}:
+    get:
+      operationId: getDenuncia
+      tags: [denuncias]
+      summary: Detalhe da denuncia
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Detalhe
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DenunciaDetalhe"
+        "404":
+          description: Nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erro"
+  /denuncias/{id}/prazo:
+    put:
+      operationId: definirPrazoDenuncia
+      tags: [denuncias]
+      summary: Define o prazo para o posto se manifestar (master)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrazoDenuncia"
+      responses:
+        "200":
+          description: Detalhe atualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DenunciaDetalhe"
+  /denuncias/{id}/andamentos:
+    post:
+      operationId: registrarAndamentoDenuncia
+      tags: [denuncias]
+      summary: Registra andamento visivel ao cliente
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NovoAndamento"
+      responses:
+        "201":
+          description: Detalhe atualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DenunciaDetalhe"
+  /denuncias/{id}/decisao:
+    put:
+      operationId: decidirDenuncia
+      tags: [denuncias]
+      summary: Registra decisao final procedente ou improcedente (master)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisaoDenuncia"
+      responses:
+        "200":
+          description: Detalhe atualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DenunciaDetalhe"
+  /denuncias/{id}/retirada:
+    post:
+      operationId: registrarRetiradaDenuncia
+      tags: [denuncias, recall]
+      summary: Registra resolucao ou retirada manual
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetiradaDenuncia"
+      responses:
+        "200":
+          description: Detalhe atualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DenunciaDetalhe"
+  /antifraude/resumo:
+    get:
+      operationId: getAntifraudeResumo
+      tags: [antifraude]
+      summary: Resumo da conformidade (master)
+      responses:
+        "200":
+          description: Resumo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AntifraudeResumo"
+  /antifraude/denunciantes:
+    get:
+      operationId: listDenunciantesAtipicos
+      tags: [antifraude]
+      summary: Denunciantes com comportamento atipico (master)
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Pagina
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DenunciantePagina"
+  /antifraude/alertas:
+    get:
+      operationId: listAlertasCampanha
+      tags: [antifraude]
+      summary: Alertas de possivel campanha coordenada (master)
+      responses:
+        "200":
+          description: Alertas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AlertaCampanha"
+  /recall:
+    get:
+      operationId: listRecall
+      tags: [recall]
+      summary: Denuncias retiradas ou resolvidas
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Pagina
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecallPagina"
+  /usuarios:
+    get:
+      operationId: listUsuarios
+      tags: [usuarios]
+      summary: Lista de usuarios do app (master)
+      parameters:
+        - name: busca
+          in: query
+          schema:
+            type: string
+        - name: faixa
+          in: query
+          schema:
+            $ref: "#/components/schemas/FaixaRanking"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Pagina
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsuarioPagina"
+  /usuarios/{id}:
+    get:
+      operationId: getUsuario
+      tags: [usuarios]
+      summary: Detalhe do usuario (master)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Detalhe
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsuarioDetalhe"
+        "404":
+          description: Nao encontrado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erro"
+  /ranking:
+    get:
+      operationId: getRanking
+      tags: [ranking]
+      summary: Ranking de denunciantes por denuncias verdadeiras (master)
+      parameters:
+        - name: faixa
+          in: query
+          schema:
+            $ref: "#/components/schemas/FaixaRanking"
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Ranking
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RankingPagina"
+  /configuracoes/ranking:
+    get:
+      operationId: getConfiguracaoRanking
+      tags: [ranking]
+      summary: Faixas do ranking (master)
+      responses:
+        "200":
+          description: Faixas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfiguracaoRanking"
+    put:
+      operationId: atualizarConfiguracaoRanking
+      tags: [ranking]
+      summary: Ajusta as faixas do ranking (master)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfiguracaoRanking"
+      responses:
+        "200":
+          description: Faixas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfiguracaoRanking"
+  /acessos:
+    get:
+      operationId: listAcessos
+      tags: [acessos]
+      summary: Lista de acessos (master)
+      responses:
+        "200":
+          description: Acessos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Acesso"
+    post:
+      operationId: criarAcesso
+      tags: [acessos]
+      summary: Cadastra dono de posto (master)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NovoAcesso"
+      responses:
+        "201":
+          description: Criado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acesso"
+  /acessos/{id}:
+    put:
+      operationId: atualizarAcesso
+      tags: [acessos]
+      summary: Altera escopo (master)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AtualizacaoAcesso"
+      responses:
+        "200":
+          description: Atualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Acesso"
+    delete:
+      operationId: removerAcesso
+      tags: [acessos]
+      summary: Remove acesso (master)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "204":
+          description: Removido
+  /painel:
+    get:
+      operationId: getPainel
+      tags: [painel]
+      summary: Indicadores (master)
+      parameters:
+        - $ref: "#/components/parameters/Dias"
+      responses:
+        "200":
+          description: Indicadores
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Painel"
+  /postos:
+    get:
+      operationId: listPostos
+      tags: [postos]
+      summary: Postos no escopo do usuario
+      parameters:
+        - name: busca
+          in: query
+          schema:
+            type: string
+        - name: selo
+          in: query
+          schema:
+            type: boolean
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Pagina
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostoPagina"
+  /postos/{id}:
+    get:
+      operationId: getPosto
+      tags: [postos]
+      summary: Detalhe do posto com denuncias e check-ins
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Detalhe
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostoDetalhe"
+        "404":
+          description: Nao encontrado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erro"
+  /anp-sincronizacoes:
+    get:
+      operationId: listSincronizacoesAnp
+      tags: [anp]
+      summary: Historico de sincronizacao ANP (master)
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Pagina
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SincronizacaoAnpPagina"
+  /recompensas:
+    get:
+      operationId: listRecompensas
+      tags: [recompensas]
+      summary: Lista de recompensas (master)
+      responses:
+        "200":
+          description: Recompensas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Recompensa"
+    post:
+      operationId: criarRecompensa
+      tags: [recompensas]
+      summary: Cadastra recompensa (master)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NovaRecompensa"
+      responses:
+        "201":
+          description: Criada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Recompensa"
+  /recompensas/{id}:
+    put:
+      operationId: atualizarRecompensa
+      tags: [recompensas]
+      summary: Edita ou ativa recompensa (master)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NovaRecompensa"
+      responses:
+        "200":
+          description: Atualizada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Recompensa"
+  /resgates:
+    get:
+      operationId: listResgates
+      tags: [recompensas]
+      summary: Lista de resgates (master)
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+      responses:
+        "200":
+          description: Pagina
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResgatePagina"
 components:
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Dias:
+      name: dias
+      in: query
+      description: Janela em dias
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 365
+        default: 30
+    CategoriaFiltro:
+      name: categoria
+      in: query
+      schema:
+        type: string
+    StatusFiltro:
+      name: status
+      in: query
+      schema:
+        type: string
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +620,876 @@ components:
           type: string
       required:
         - status
-
+    Erro:
+      type: object
+      properties:
+        erro:
+          type: string
+      required:
+        - erro
+    Papel:
+      type: string
+      enum: [master, posto]
+    FaixaScore:
+      type: string
+      enum: [confiavel, atencao, suspeita]
+    FaixaRanking:
+      type: string
+      enum: [ouro, prata, bronze, sem_faixa]
+    PrazoEstado:
+      type: string
+      enum: [sem_prazo, no_prazo, vencendo, vencido, encerrado]
+    Escopo:
+      type: object
+      properties:
+        tipo:
+          type: string
+          enum: [todos, posto, rede]
+        postoId:
+          type: [string, "null"]
+        cnpjRaiz:
+          type: [string, "null"]
+      required: [tipo]
+    Sessao:
+      type: object
+      properties:
+        email:
+          type: string
+        nome:
+          type: [string, "null"]
+        papel:
+          $ref: "#/components/schemas/Papel"
+        escopo:
+          $ref: "#/components/schemas/Escopo"
+      required: [email, papel, escopo]
+    PontoCalor:
+      type: object
+      properties:
+        lat:
+          type: number
+        lng:
+          type: number
+        peso:
+          type: number
+      required: [lat, lng, peso]
+    MapaPin:
+      type: object
+      properties:
+        postoId:
+          type: string
+        nome:
+          type: string
+        bandeira:
+          type: [string, "null"]
+        municipio:
+          type: [string, "null"]
+        lat:
+          type: number
+        lng:
+          type: number
+        denuncias:
+          type: integer
+        abertas:
+          type: integer
+        vencidas:
+          type: integer
+        checkins:
+          type: integer
+        seloIcl:
+          type: boolean
+      required: [postoId, nome, lat, lng, denuncias, abertas, vencidas, checkins, seloIcl]
+    Mapa:
+      type: object
+      properties:
+        pins:
+          type: array
+          items:
+            $ref: "#/components/schemas/MapaPin"
+        calor:
+          type: array
+          items:
+            $ref: "#/components/schemas/PontoCalor"
+        totalDenuncias:
+          type: integer
+        totalCheckins:
+          type: integer
+      required: [pins, calor, totalDenuncias, totalCheckins]
+    DenunciaResumo:
+      type: object
+      properties:
+        id:
+          type: string
+        protocolo:
+          type: string
+        categoria:
+          type: string
+        status:
+          type: string
+        municipio:
+          type: [string, "null"]
+        postoId:
+          type: [string, "null"]
+        postoNome:
+          type: [string, "null"]
+        descricaoResumo:
+          type: string
+        criadoEm:
+          type: string
+          format: date-time
+        prazoEm:
+          type: [string, "null"]
+          format: date-time
+        prazoEstado:
+          $ref: "#/components/schemas/PrazoEstado"
+        decisao:
+          type: [string, "null"]
+          enum: [procedente, improcedente, null]
+        retirada:
+          type: boolean
+        score:
+          type: [integer, "null"]
+          description: Nulo para o papel posto
+        faixa:
+          anyOf:
+            - $ref: "#/components/schemas/FaixaScore"
+            - type: "null"
+      required: [id, protocolo, categoria, status, descricaoResumo, criadoEm, prazoEstado, retirada]
+    DenunciaPagina:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DenunciaResumo"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+      required: [items, total, page, pageSize]
+    Anexo:
+      type: object
+      properties:
+        nome:
+          type: string
+        url:
+          type: [string, "null"]
+      required: [nome]
+    Denunciante:
+      type: object
+      description: Nulo para o papel posto
+      properties:
+        tipo:
+          type: string
+          enum: [usuario, aparelho, desconhecido]
+        id:
+          type: [string, "null"]
+        rotulo:
+          type: string
+        contato:
+          type: [string, "null"]
+        totalDenuncias:
+          type: integer
+        procedentes:
+          type: integer
+        improcedentes:
+          type: integer
+        faixaRanking:
+          $ref: "#/components/schemas/FaixaRanking"
+        criadoEm:
+          type: [string, "null"]
+          format: date-time
+      required: [tipo, rotulo, totalDenuncias, procedentes, improcedentes, faixaRanking]
+    CheckinInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        postoId:
+          type: string
+        postoNome:
+          type: [string, "null"]
+        pontos:
+          type: integer
+        distanciaM:
+          type: [integer, "null"]
+        criadoEm:
+          type: string
+          format: date-time
+        usuarioRotulo:
+          type: [string, "null"]
+      required: [id, postoId, pontos, criadoEm]
+    FatorScore:
+      type: object
+      properties:
+        chave:
+          type: string
+        nome:
+          type: string
+        impacto:
+          type: integer
+          description: Pontos somados (positivo) ou subtraidos (negativo) do score
+        neutro:
+          type: boolean
+        detalhe:
+          type: string
+      required: [chave, nome, impacto, neutro, detalhe]
+    EventoTempo:
+      type: object
+      properties:
+        tipo:
+          type: string
+          enum: [criada, andamento, prazo, decisao, retirada]
+        titulo:
+          type: string
+        mensagem:
+          type: [string, "null"]
+        autor:
+          type: [string, "null"]
+        criadoEm:
+          type: string
+          format: date-time
+      required: [tipo, titulo, criadoEm]
+    Retirada:
+      type: object
+      properties:
+        origem:
+          type: string
+          enum: [cliente, posto, master]
+        resolucao:
+          type: [string, "null"]
+        retiradaEm:
+          type: string
+          format: date-time
+        autor:
+          type: [string, "null"]
+      required: [origem, retiradaEm]
+    EvidenciaAnp:
+      type: object
+      properties:
+        autuacoes24m:
+          type: [integer, "null"]
+        qualidadeConforme:
+          type: [boolean, "null"]
+        notaAnp:
+          type: [integer, "null"]
+        irregularidades:
+          type: integer
+        ensaiosNaoConformes:
+          type: integer
+        amostrasNaoConformes:
+          type: integer
+        confirmaDenuncia:
+          type: boolean
+      required: [irregularidades, ensaiosNaoConformes, amostrasNaoConformes, confirmaDenuncia]
+    Disponibilidade:
+      type: object
+      description: O que o app atual informa sobre esta denuncia
+      properties:
+        denunciante:
+          type: boolean
+        localizacao:
+          type: boolean
+        anexos:
+          type: boolean
+        andamentosNoApp:
+          type: boolean
+      required: [denunciante, localizacao, anexos, andamentosNoApp]
+    DenunciaDetalhe:
+      allOf:
+        - $ref: "#/components/schemas/DenunciaResumo"
+        - type: object
+          properties:
+            descricao:
+              type: string
+            anexos:
+              type: array
+              items:
+                $ref: "#/components/schemas/Anexo"
+            localizacaoUsuario:
+              anyOf:
+                - $ref: "#/components/schemas/PontoCalor"
+                - type: "null"
+            distanciaPostoM:
+              type: [integer, "null"]
+            denunciante:
+              anyOf:
+                - $ref: "#/components/schemas/Denunciante"
+                - type: "null"
+            historicoDenunciante:
+              type: array
+              items:
+                $ref: "#/components/schemas/DenunciaResumo"
+            checkinsDenunciante:
+              type: array
+              items:
+                $ref: "#/components/schemas/CheckinInfo"
+            evidenciaAnp:
+              anyOf:
+                - $ref: "#/components/schemas/EvidenciaAnp"
+                - type: "null"
+            fatores:
+              type: array
+              items:
+                $ref: "#/components/schemas/FatorScore"
+            linhaDoTempo:
+              type: array
+              items:
+                $ref: "#/components/schemas/EventoTempo"
+            decisaoObservacao:
+              type: [string, "null"]
+            decisaoPor:
+              type: [string, "null"]
+            decisaoEm:
+              type: [string, "null"]
+              format: date-time
+            retiradaInfo:
+              anyOf:
+                - $ref: "#/components/schemas/Retirada"
+                - type: "null"
+            disponibilidade:
+              $ref: "#/components/schemas/Disponibilidade"
+          required: [descricao, anexos, historicoDenunciante, checkinsDenunciante, fatores, linhaDoTempo, disponibilidade]
+    PrazoDenuncia:
+      type: object
+      properties:
+        dias:
+          type: integer
+          minimum: 1
+          maximum: 90
+      required: [dias]
+    NovoAndamento:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [encaminhada, respondida]
+        mensagem:
+          type: string
+          minLength: 3
+          maxLength: 2000
+        orgao:
+          type: [string, "null"]
+      required: [status, mensagem]
+    DecisaoDenuncia:
+      type: object
+      properties:
+        decisao:
+          type: string
+          enum: [procedente, improcedente]
+        observacao:
+          type: [string, "null"]
+      required: [decisao]
+    RetiradaDenuncia:
+      type: object
+      properties:
+        resolucao:
+          type: string
+          minLength: 3
+          maxLength: 2000
+      required: [resolucao]
+    AntifraudeResumo:
+      type: object
+      properties:
+        suspeitas:
+          type: integer
+        atencao:
+          type: integer
+        confiaveis:
+          type: integer
+        pendentesDeDecisao:
+          type: integer
+        denunciantesAtipicos:
+          type: integer
+        alertasCampanha:
+          type: integer
+      required: [suspeitas, atencao, confiaveis, pendentesDeDecisao, denunciantesAtipicos, alertasCampanha]
+    DenuncianteAtipico:
+      type: object
+      properties:
+        tipo:
+          type: string
+          enum: [usuario, aparelho]
+        id:
+          type: string
+        rotulo:
+          type: string
+        totalDenuncias:
+          type: integer
+        denunciasUltimos30d:
+          type: integer
+        procedentes:
+          type: integer
+        improcedentes:
+          type: integer
+        postosDistintos:
+          type: integer
+        scoreMedio:
+          type: integer
+        motivos:
+          type: array
+          items:
+            type: string
+      required: [tipo, id, rotulo, totalDenuncias, denunciasUltimos30d, procedentes, improcedentes, postosDistintos, scoreMedio, motivos]
+    DenunciantePagina:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DenuncianteAtipico"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+      required: [items, total, page, pageSize]
+    AlertaCampanha:
+      type: object
+      properties:
+        postoId:
+          type: string
+        postoNome:
+          type: [string, "null"]
+        totalDenuncias:
+          type: integer
+        denunciantesDistintos:
+          type: integer
+        janelaHoras:
+          type: integer
+        primeiraEm:
+          type: string
+          format: date-time
+        ultimaEm:
+          type: string
+          format: date-time
+        scoreMedio:
+          type: integer
+        motivo:
+          type: string
+        denunciaIds:
+          type: array
+          items:
+            type: string
+      required: [postoId, totalDenuncias, denunciantesDistintos, janelaHoras, primeiraEm, ultimaEm, scoreMedio, motivo, denunciaIds]
+    RecallItem:
+      type: object
+      properties:
+        denunciaId:
+          type: string
+        protocolo:
+          type: string
+        categoria:
+          type: string
+        postoId:
+          type: [string, "null"]
+        postoNome:
+          type: [string, "null"]
+        origem:
+          type: string
+          enum: [cliente, posto, master]
+        resolucao:
+          type: [string, "null"]
+        criadaEm:
+          type: string
+          format: date-time
+        retiradaEm:
+          type: string
+          format: date-time
+        horasAteResolver:
+          type: integer
+      required: [denunciaId, protocolo, categoria, origem, criadaEm, retiradaEm, horasAteResolver]
+    RecallPagina:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecallItem"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+      required: [items, total, page, pageSize]
+    UsuarioResumo:
+      type: object
+      properties:
+        id:
+          type: string
+        contato:
+          type: string
+        saldoPontos:
+          type: integer
+        checkins:
+          type: integer
+        resgates:
+          type: integer
+        denuncias:
+          type: integer
+        denunciasVerdadeiras:
+          type: integer
+        faixa:
+          $ref: "#/components/schemas/FaixaRanking"
+        criadoEm:
+          type: string
+          format: date-time
+      required: [id, contato, saldoPontos, checkins, resgates, denuncias, denunciasVerdadeiras, faixa, criadoEm]
+    UsuarioPagina:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsuarioResumo"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+      required: [items, total, page, pageSize]
+    TransacaoPontos:
+      type: object
+      properties:
+        id:
+          type: string
+        tipo:
+          type: string
+        pontos:
+          type: integer
+        descricao:
+          type: [string, "null"]
+        criadoEm:
+          type: string
+          format: date-time
+      required: [id, tipo, pontos, criadoEm]
+    Resgate:
+      type: object
+      properties:
+        id:
+          type: string
+        usuarioId:
+          type: string
+        usuarioContato:
+          type: [string, "null"]
+        recompensaId:
+          type: string
+        recompensaNome:
+          type: [string, "null"]
+        codigo:
+          type: string
+        status:
+          type: string
+        custoPontos:
+          type: integer
+        criadoEm:
+          type: string
+          format: date-time
+      required: [id, usuarioId, recompensaId, codigo, status, custoPontos, criadoEm]
+    ResgatePagina:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Resgate"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+      required: [items, total, page, pageSize]
+    UsuarioDetalhe:
+      allOf:
+        - $ref: "#/components/schemas/UsuarioResumo"
+        - type: object
+          properties:
+            extrato:
+              type: array
+              items:
+                $ref: "#/components/schemas/TransacaoPontos"
+            checkinsLista:
+              type: array
+              items:
+                $ref: "#/components/schemas/CheckinInfo"
+            resgatesLista:
+              type: array
+              items:
+                $ref: "#/components/schemas/Resgate"
+            denunciasLista:
+              type: array
+              items:
+                $ref: "#/components/schemas/DenunciaResumo"
+            proximaFaixa:
+              type: [string, "null"]
+          required: [extrato, checkinsLista, resgatesLista, denunciasLista]
+    ConfiguracaoRanking:
+      type: object
+      properties:
+        bronze:
+          type: integer
+          minimum: 1
+        prata:
+          type: integer
+          minimum: 1
+        ouro:
+          type: integer
+          minimum: 1
+      required: [bronze, prata, ouro]
+    RankingItem:
+      type: object
+      properties:
+        posicao:
+          type: integer
+        tipo:
+          type: string
+          enum: [usuario, aparelho]
+        id:
+          type: string
+        rotulo:
+          type: string
+        denunciasVerdadeiras:
+          type: integer
+        totalDenuncias:
+          type: integer
+        faixa:
+          $ref: "#/components/schemas/FaixaRanking"
+      required: [posicao, tipo, id, rotulo, denunciasVerdadeiras, totalDenuncias, faixa]
+    RankingPagina:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RankingItem"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        configuracao:
+          $ref: "#/components/schemas/ConfiguracaoRanking"
+      required: [items, total, page, pageSize, configuracao]
+    Acesso:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        nome:
+          type: [string, "null"]
+        papel:
+          $ref: "#/components/schemas/Papel"
+        escopo:
+          $ref: "#/components/schemas/Escopo"
+        postoNome:
+          type: [string, "null"]
+        criadoEm:
+          type: string
+          format: date-time
+      required: [id, email, papel, escopo, criadoEm]
+    NovoAcesso:
+      type: object
+      properties:
+        email:
+          type: string
+        nome:
+          type: [string, "null"]
+        escopoTipo:
+          type: string
+          enum: [posto, rede]
+        postoId:
+          type: string
+          description: Obrigatorio. Para rede, o CNPJ raiz e derivado deste posto
+      required: [email, escopoTipo, postoId]
+    AtualizacaoAcesso:
+      type: object
+      properties:
+        nome:
+          type: [string, "null"]
+        escopoTipo:
+          type: string
+          enum: [posto, rede]
+        postoId:
+          type: string
+      required: [escopoTipo, postoId]
+    SerieDia:
+      type: object
+      properties:
+        dia:
+          type: string
+        checkins:
+          type: integer
+        denuncias:
+          type: integer
+        buscas:
+          type: integer
+      required: [dia, checkins, denuncias, buscas]
+    Painel:
+      type: object
+      properties:
+        usuarios:
+          type: integer
+        checkins:
+          type: integer
+        denunciasAbertas:
+          type: integer
+        denunciasTotal:
+          type: integer
+        denunciasVencidas:
+          type: integer
+        resgates:
+          type: integer
+        postosComSelo:
+          type: integer
+        postosTotal:
+          type: integer
+        usoDiario:
+          type: array
+          items:
+            $ref: "#/components/schemas/SerieDia"
+      required: [usuarios, checkins, denunciasAbertas, denunciasTotal, denunciasVencidas, resgates, postosComSelo, postosTotal, usoDiario]
+    PostoResumo:
+      type: object
+      properties:
+        id:
+          type: string
+        nome:
+          type: string
+        cnpj:
+          type: [string, "null"]
+        bandeira:
+          type: [string, "null"]
+        municipio:
+          type: [string, "null"]
+        uf:
+          type: [string, "null"]
+        tier:
+          type: [string, "null"]
+        seloIcl:
+          type: boolean
+        score:
+          type: [integer, "null"]
+        denuncias:
+          type: integer
+        checkins:
+          type: integer
+      required: [id, nome, seloIcl, denuncias, checkins]
+    PostoPagina:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PostoResumo"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+      required: [items, total, page, pageSize]
+    PostoDetalhe:
+      allOf:
+        - $ref: "#/components/schemas/PostoResumo"
+        - type: object
+          properties:
+            razaoSocial:
+              type: [string, "null"]
+            endereco:
+              type: [string, "null"]
+            lat:
+              type: [number, "null"]
+            lng:
+              type: [number, "null"]
+            anp:
+              $ref: "#/components/schemas/EvidenciaAnp"
+            denunciasLista:
+              type: array
+              items:
+                $ref: "#/components/schemas/DenunciaResumo"
+            checkinsLista:
+              type: array
+              items:
+                $ref: "#/components/schemas/CheckinInfo"
+          required: [anp, denunciasLista, checkinsLista]
+    SincronizacaoAnp:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        postosLidos:
+          type: integer
+        postosAtualizados:
+          type: integer
+        paginasColetadas:
+          type: integer
+        divergenciasNota:
+          type: integer
+        iniciadoEm:
+          type: [string, "null"]
+          format: date-time
+        concluidoEm:
+          type: [string, "null"]
+          format: date-time
+        temErros:
+          type: boolean
+      required: [id, status, postosLidos, postosAtualizados, paginasColetadas, divergenciasNota, temErros]
+    SincronizacaoAnpPagina:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SincronizacaoAnp"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+      required: [items, total, page, pageSize]
+    Recompensa:
+      type: object
+      properties:
+        id:
+          type: string
+        nome:
+          type: string
+        descricao:
+          type: [string, "null"]
+        categoria:
+          type: [string, "null"]
+        custoPontos:
+          type: integer
+        ativa:
+          type: boolean
+        criadoEm:
+          type: string
+          format: date-time
+      required: [id, nome, custoPontos, ativa, criadoEm]
+    NovaRecompensa:
+      type: object
+      properties:
+        nome:
+          type: string
+          minLength: 2
+        descricao:
+          type: [string, "null"]
+        categoria:
+          type: [string, "null"]
+        custoPontos:
+          type: integer
+          minimum: 1
+        ativa:
+          type: boolean
+      required: [nome, custoPontos, ativa]

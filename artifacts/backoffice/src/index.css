@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@layer theme, base, clerk, components, utilities;
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @plugin "@tailwindcss/typography";
@@ -57,6 +59,12 @@
   --color-sidebar-ring: hsl(var(--sidebar-ring));
 
   --font-sans: var(--app-font-sans);
+  --font-display: var(--app-font-serif);
+  --color-ok: hsl(158 55% 30%);
+  --color-warn: hsl(38 95% 44%);
+  --color-alert: hsl(356 74% 46%);
+  --color-signal: hsl(22 94% 48%);
+  --color-petrol: hsl(203 48% 11%);
   --font-serif: var(--app-font-serif);
   --font-mono: var(--app-font-mono);
 
@@ -78,72 +86,72 @@
   --elevate-1: rgba(0, 0, 0, 0.03);
   --elevate-2: rgba(0, 0, 0, 0.08);
 
-  --background: red; /*replace with H S L */
+  --background: 42 33% 95%;
 
-  --foreground: red; /*replace with H S L */
+  --foreground: 205 45% 11%;
 
-  --border: red; /*replace with H S L */
+  --border: 38 18% 82%;
 
-  --card: red; /*replace with H S L */
+  --card: 42 40% 98.5%;
 
-  --card-foreground: red; /*replace with H S L */
+  --card-foreground: 205 45% 11%;
 
-  --card-border: red; /*replace with H S L */
+  --card-border: 38 18% 84%;
 
-  --sidebar: red; /*replace with H S L */
+  --sidebar: 203 48% 11%;
 
-  --sidebar-foreground: red; /*replace with H S L */
+  --sidebar-foreground: 40 25% 86%;
 
-  --sidebar-border: red; /*replace with H S L */
+  --sidebar-border: 203 35% 19%;
 
-  --sidebar-primary: red; /*replace with H S L */
+  --sidebar-primary: 22 96% 52%;
 
-  --sidebar-primary-foreground: red; /*replace with H S L */
+  --sidebar-primary-foreground: 40 60% 98%;
 
-  --sidebar-accent: red; /*replace with H S L */
+  --sidebar-accent: 203 38% 17%;
 
-  --sidebar-accent-foreground: red; /*replace with H S L */
+  --sidebar-accent-foreground: 40 40% 96%;
 
-  --sidebar-ring: red; /*replace with H S L */
+  --sidebar-ring: 22 96% 52%;
 
-  --popover: red; /*replace with H S L */
+  --popover: 42 40% 98.5%;
 
-  --popover-foreground: red; /*replace with H S L */
+  --popover-foreground: 205 45% 11%;
 
-  --popover-border: red; /*replace with H S L */
+  --popover-border: 38 18% 82%;
 
-  --primary: red; /*replace with H S L */
+  --primary: 22 94% 48%;
 
-  --primary-foreground: red; /*replace with H S L */
+  --primary-foreground: 40 60% 98%;
 
-  --secondary: red; /*replace with H S L */
+  --secondary: 196 30% 90%;
 
-  --secondary-foreground: red; /*replace with H S L */
+  --secondary-foreground: 200 50% 16%;
 
-  --muted: red; /*replace with H S L */
+  --muted: 40 22% 90%;
 
-  --muted-foreground: red; /*replace with H S L */
+  --muted-foreground: 205 14% 38%;
 
-  --accent: red; /*replace with H S L */
+  --accent: 186 38% 88%;
 
-  --accent-foreground: red; /*replace with H S L */
+  --accent-foreground: 196 60% 17%;
 
-  --destructive: red; /*replace with H S L */
+  --destructive: 356 74% 46%;
 
-  --destructive-foreground: red; /*replace with H S L */
+  --destructive-foreground: 40 60% 98%;
 
-  --input: red; /*replace with H S L */
-  --ring: red; /*replace with H S L */
-  --chart-1: red; /*replace with H S L */
-  --chart-2: red; /*replace with H S L */
-  --chart-3: red; /*replace with H S L */
-  --chart-4: red; /*replace with H S L */
-  --chart-5: red; /*replace with H S L */
+  --input: 38 18% 76%;
+  --ring: 22 94% 48%;
+  --chart-1: 22 94% 48%;
+  --chart-2: 196 70% 30%;
+  --chart-3: 160 45% 36%;
+  --chart-4: 44 92% 50%;
+  --chart-5: 356 70% 50%;
 
-  --app-font-sans: 'Inter', sans-serif;
-  --app-font-serif: Georgia, serif;
-  --app-font-mono: Menlo, monospace;
-  --radius: 0.5rem; /* 8px */
+  --app-font-sans: 'Instrument Sans', ui-sans-serif, sans-serif;
+  --app-font-serif: 'Bricolage Grotesque', ui-sans-serif, sans-serif;
+  --app-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --radius: 0.375rem; /* 8px */
   --shadow-2xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0); /*replace with H S L */
   --shadow-xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0); /*replace with H S L */
   --shadow-sm:
@@ -227,68 +235,68 @@
   --elevate-1: rgba(255, 255, 255, 0.04);
   --elevate-2: rgba(255, 255, 255, 0.09);
 
-  --background: red; /*replace with H S L */
+  --background: 204 40% 7%;
 
-  --foreground: red; /*replace with H S L */
+  --foreground: 40 25% 90%;
 
-  --border: red; /*replace with H S L */
+  --border: 203 28% 18%;
 
-  --card: red; /*replace with H S L */
+  --card: 204 38% 10%;
 
-  --card-foreground: red; /*replace with H S L */
+  --card-foreground: 40 25% 90%;
 
-  --card-border: red; /*replace with H S L */
+  --card-border: 203 28% 18%;
 
-  --sidebar: red; /*replace with H S L */
+  --sidebar: 204 45% 6%;
 
-  --sidebar-foreground: red; /*replace with H S L */
+  --sidebar-foreground: 40 25% 86%;
 
-  --sidebar-border: red; /*replace with H S L */
+  --sidebar-border: 203 30% 15%;
 
-  --sidebar-primary: red; /*replace with H S L */
+  --sidebar-primary: 22 96% 54%;
 
-  --sidebar-primary-foreground: red; /*replace with H S L */
+  --sidebar-primary-foreground: 40 60% 98%;
 
-  --sidebar-accent: red; /*replace with H S L */
+  --sidebar-accent: 203 38% 14%;
 
-  --sidebar-accent-foreground: red; /*replace with H S L */
+  --sidebar-accent-foreground: 40 40% 96%;
 
-  --sidebar-ring: red; /*replace with H S L */
+  --sidebar-ring: 22 96% 54%;
 
-  --popover: red; /*replace with H S L */
+  --popover: 204 38% 10%;
 
-  --popover-foreground: red; /*replace with H S L */
+  --popover-foreground: 40 25% 90%;
 
-  --popover-border: red; /*replace with H S L */
+  --popover-border: 203 28% 18%;
 
-  --primary: red; /*replace with H S L */
+  --primary: 22 94% 54%;
 
-  --primary-foreground: red; /*replace with H S L */
+  --primary-foreground: 204 45% 8%;
 
-  --secondary: red; /*replace with H S L */
+  --secondary: 200 30% 16%;
 
-  --secondary-foreground: red; /*replace with H S L */
+  --secondary-foreground: 40 25% 90%;
 
-  --muted: red; /*replace with H S L */
+  --muted: 203 28% 14%;
 
-  --muted-foreground: red; /*replace with H S L */
+  --muted-foreground: 200 12% 62%;
 
-  --accent: red; /*replace with H S L */
+  --accent: 186 30% 18%;
 
-  --accent-foreground: red; /*replace with H S L */
+  --accent-foreground: 186 40% 88%;
 
-  --destructive: red; /*replace with H S L */
+  --destructive: 356 70% 52%;
 
-  --destructive-foreground: red; /*replace with H S L */
+  --destructive-foreground: 40 60% 98%;
 
   /* Used as the border around inputs. Dark mode: Should be a border that is light enough to have high contrast when rendered on a --card background. More contrast than standard --border */
-  --input: red; /*replace with H S L */
-  --ring: red; /*replace with H S L */
-  --chart-1: red; /*replace with H S L */
-  --chart-2: red; /*replace with H S L */
-  --chart-3: red; /*replace with H S L */
-  --chart-4: red; /*replace with H S L */
-  --chart-5: red; /*replace with H S L */
+  --input: 203 25% 26%;
+  --ring: 22 94% 54%;
+  --chart-1: 22 94% 54%;
+  --chart-2: 196 60% 50%;
+  --chart-3: 160 45% 46%;
+  --chart-4: 44 92% 55%;
+  --chart-5: 356 70% 58%;
 
   --shadow-2xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0);
   --shadow-xs: 0px 2px 0px 0px hsl(202.8169 89.1213% 53.1373% / 0);
@@ -431,3 +439,26 @@
     inset: -1px;
   }
 }
+
+@layer base {
+  h1, h2, h3, .font-display { font-family: var(--app-font-serif); letter-spacing: -0.02em; }
+  .tnum { font-variant-numeric: tabular-nums; }
+}
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise .38s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes pulse-ring { 0% { transform: scale(.6); opacity: .8 } 100% { transform: scale(2.2); opacity: 0 } }
+.pulse-ring { animation: pulse-ring 1.8s ease-out infinite; }
+.hazard { background-image: repeating-linear-gradient(-45deg, hsl(var(--primary)) 0 8px, hsl(var(--sidebar)) 8px 16px); }
+.grid-paper { background-image: linear-gradient(hsl(var(--border)/.5) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--border)/.5) 1px, transparent 1px); background-size: 28px 28px; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th { text-align: left; font-family: var(--app-font-mono); font-size: 10.5px; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; color: hsl(var(--muted-foreground)); padding: 8px 12px; border-bottom: 1px solid hsl(var(--border)); background: hsl(var(--muted)/.5); white-space: nowrap; }
+.data-table td { padding: 9px 12px; border-bottom: 1px solid hsl(var(--border)/.7); vertical-align: middle; }
+.data-table tbody tr { transition: background-color .15s; }
+.data-table tbody tr:hover { background: hsl(var(--primary)/.045); }
+.leaflet-container { font-family: var(--app-font-sans); background: hsl(var(--muted)); }
+.leaflet-tile-pane { filter: saturate(.55) sepia(.12) contrast(.95); }
+.leaflet-popup-content-wrapper { border-radius: 6px; }
+body::after { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9999; opacity: .035; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+.cl-formFieldInput::placeholder { color: hsl(205 14% 50%); opacity: 1; }
+.cl-formButtonPrimary:hover { background: hsl(22 94% 42%) !important; }
+.cl-socialButtonsBlockButton:hover { background: hsl(40 22% 90%) !important; }
