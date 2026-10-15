@@ -404,6 +404,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/Acesso"
   /acessos/{id}:
+    post:
+      operationId: reenviarConviteAcesso
+      tags: [acessos]
+      summary: Reenvia convite de acesso (master)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Resultado do convite
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConviteAcesso"
     put:
       operationId: atualizarAcesso
       tags: [acessos]
@@ -1294,7 +1307,17 @@ components:
         criadoEm:
           type: string
           format: date-time
+        conviteStatus:
+          type: string
+          enum: [enviado, conta_existente, falha]
       required: [id, email, papel, escopo, criadoEm]
+    ConviteAcesso:
+      type: object
+      properties:
+        conviteStatus:
+          type: string
+          enum: [enviado, conta_existente]
+      required: [conviteStatus]
     NovoAcesso:
       type: object
       properties:

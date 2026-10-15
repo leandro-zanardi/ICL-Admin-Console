@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { AcessoConviteStatus } from './acessoConviteStatus';
 import type { Escopo } from './escopo';
 import type { Papel } from './papel';
 
@@ -18,4 +19,5 @@ export interface Acesso {
   /** @nullable */
   postoNome?: string | null;
   criadoEm: Date;
+  conviteStatus?: AcessoConviteStatus;
 }

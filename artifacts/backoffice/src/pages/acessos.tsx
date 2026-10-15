@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { getListAcessosQueryKey, useAtualizarAcesso, useCriarAcesso, useListAcessos, useRemoverAcesso, type Acesso } from "@workspace/api-client-react";
-import { KeyRound, Network, Pencil, Plus, Store } from "lucide-react";
+import { getListAcessosQueryKey, useAtualizarAcesso, useCriarAcesso, useListAcessos, useReenviarConviteAcesso, useRemoverAcesso, type Acesso } from "@workspace/api-client-react";
+import { KeyRound, Mail, Network, Pencil, Plus, Store } from "lucide-react";
 import { PageHeader, Panel, SkeletonRows, ErrorState, EmptyState, Btn, TextBox, ConfirmBtn } from "@/components/kit";
 import { PostoPicker, type PostoEscolhido } from "@/components/posto-picker";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -36,13 +36,13 @@ export default function Acessos() {
   const [escopo, setEscopo] = useState<Escopo>("posto");
   const [posto, setPosto] = useState<PostoEscolhido | null>(null);
   const [edit, setEdit] = useState<Acesso | null>(null);
-  const criar = useCriarAcesso({ mutation: { onSuccess: () => { inv(); setEmail(""); setNome(""); setPosto(null); toast({ title: "Acesso criado", description: "O dono já pode entrar com este e-mail." }); }, onError: (e) => toast({ title: "Falha ao criar acesso", description: errMsg(e), variant: "destructive" }) } });
+  const criar = useCriarAcesso({ mutation: { onSuccess: (acesso) => { inv(); setEmail(""); setNome(""); setPosto(null); toast({ title: acesso.conviteStatus === "enviado" ? "Convite enviado" : acesso.conviteStatus === "conta_existente" ? "Acesso liberado" : "Acesso criado, convite não enviado", description: acesso.conviteStatus === "enviado" ? `Enviamos um convite para ${acesso.email}. A pessoa deve aceitar o convite e criar a própria senha.` : acesso.conviteStatus === "conta_existente" ? "Este e-mail já tem uma conta. A pessoa pode entrar com ela ou usar “Esqueci a senha” na tela de login." : "O acesso foi salvo, mas o convite por e-mail falhou. A pessoa pode usar “Criar conta” com este e-mail; se já tiver conta, use “Esqueci a senha”." }); }, onError: (e) => toast({ title: "Falha ao criar acesso", description: errMsg(e), variant: "destructive" }) } });
   const remover = useRemoverAcesso({ mutation: { onSuccess: () => { inv(); toast({ title: "Acesso removido" }); }, onError: (e) => toast({ title: "Falha ao remover", description: errMsg(e), variant: "destructive" }) } });
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
   return (
     <div>
-      <PageHeader code="07 / Gestão" title="Acessos de donos de posto" desc="Libere o backoffice por e-mail. O escopo define o que o dono enxerga: um posto específico ou toda a rede (CNPJ raiz, os 8 primeiros dígitos do CNPJ)." />
+      <PageHeader code="07 / Gestão" title="Acessos de donos de posto" desc="Libere o backoffice por e-mail e envie um convite para a pessoa criar a própria senha. O escopo define o que o dono enxerga: um posto específico ou toda a rede (CNPJ raiz, os 8 primeiros dígitos do CNPJ)." />
       <div className="grid gap-4 px-5 py-5 md:px-7 xl:grid-cols-[380px_minmax(0,1fr)]">
         <Panel title="Novo acesso" bodyClass="p-4">
           <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); if (posto) criar.mutate({ data: { email: email.trim(), nome: nome || null, escopoTipo: escopo, postoId: posto.id } }); }}>
@@ -54,7 +54,7 @@ export default function Acessos() {
               <PostoPicker value={posto} onChange={setPosto} />
               {posto && <div className="rounded bg-muted px-2.5 py-1.5 text-[12px]">{escopo === "rede" ? <>Rede com CNPJ raiz <b className="font-mono">{cnpjRaiz(posto.cnpj) || "-"}</b></> : <>Posto <b>{posto.nome}</b></>}</div>}
             </div>
-            <Btn data-testid="button-criar-acesso" disabled={!emailOk || !posto || criar.isPending}><Plus className="size-3.5" />{criar.isPending ? "Criando" : "Liberar acesso"}</Btn>
+            <Btn data-testid="button-criar-acesso" disabled={!emailOk || !posto || criar.isPending}><Plus className="size-3.5" />{criar.isPending ? "Criando e enviando convite" : "Liberar e convidar"}</Btn>
           </form>
         </Panel>
         <Panel title={`Acessos cadastrados${q.data ? ` · ${q.data.length}` : ""}`}>
@@ -74,6 +74,7 @@ export default function Acessos() {
                       <td className="text-right">
                         {a.papel === "posto" && (
                           <span className="inline-flex gap-1">
+                            <BotaoConvite acesso={a} />
                             <Btn data-testid={`button-editar-${a.id}`} variant="outline" className="h-7 px-2" onClick={() => setEdit(a)}><Pencil className="size-3" />Escopo</Btn>
                             <ConfirmBtn testId={`button-remover-${a.id}`} onConfirm={() => remover.mutate({ id: a.id })}>Remover</ConfirmBtn>
                           </span>
@@ -89,6 +90,32 @@ export default function Acessos() {
       </div>
       {edit && <EditarAcesso acesso={edit} onClose={() => setEdit(null)} onSaved={inv} />}
     </div>
+  );
+}
+
+function BotaoConvite({ acesso }: { acesso: Acesso }) {
+  const { toast } = useToast();
+  const convite = useReenviarConviteAcesso({
+    mutation: {
+      onSuccess: (r) => toast({
+        title: r.conviteStatus === "enviado" ? "Convite enviado" : "A conta já existe",
+        description: r.conviteStatus === "enviado"
+          ? `Enviamos um convite para ${acesso.email}. A pessoa deve aceitar e criar a própria senha.`
+          : "A pessoa pode entrar com a conta existente ou usar “Esqueci a senha” na tela de login.",
+      }),
+      onError: (e) => toast({ title: "Não foi possível enviar o convite", description: errMsg(e), variant: "destructive" }),
+    },
+  });
+  return (
+    <Btn
+      data-testid={`button-convidar-${acesso.id}`}
+      variant="outline"
+      className="h-7 px-2"
+      disabled={convite.isPending}
+      onClick={() => convite.mutate({ id: acesso.id })}
+    >
+      <Mail className="size-3" />{convite.isPending ? "Enviando" : "Reenviar convite"}
+    </Btn>
   );
 }
 

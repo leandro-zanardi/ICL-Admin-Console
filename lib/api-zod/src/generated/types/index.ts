@@ -7,6 +7,7 @@
  */
 
 export * from './acesso';
+export * from './acessoConviteStatus';
 export * from './alertaCampanha';
 export * from './anexo';
 export * from './antifraudeResumo';
@@ -15,6 +16,8 @@ export * from './atualizacaoAcessoEscopoTipo';
 export * from './categoriaFiltroParameter';
 export * from './checkinInfo';
 export * from './configuracaoRanking';
+export * from './conviteAcesso';
+export * from './conviteAcessoConviteStatus';
 export * from './decisaoDenuncia';
 export * from './decisaoDenunciaDecisao';
 export * from './denunciaDetalhe';

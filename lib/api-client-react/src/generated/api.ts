@@ -25,6 +25,7 @@ import type {
   AntifraudeResumo,
   AtualizacaoAcesso,
   ConfiguracaoRanking,
+  ConviteAcesso,
   DecisaoDenuncia,
   DenunciaDetalhe,
   DenunciaPagina,
@@ -1738,6 +1739,80 @@ export const useCriarAcesso = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getCriarAcessoMutationOptions(options));
+    }
+
+export const getReenviarConviteAcessoUrl = (id: string,) => {
+
+
+
+
+  return `/api/acessos/${id}`
+}
+
+/**
+ * @summary Reenvia convite de acesso (master)
+ */
+export const reenviarConviteAcesso = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<ConviteAcesso> => {
+
+  return customFetch<ConviteAcesso>(getReenviarConviteAcessoUrl(id),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+
+export const getReenviarConviteAcessoMutationKey = () => ['reenviarConviteAcesso'] as const;
+
+export const getReenviarConviteAcessoMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reenviarConviteAcesso>>, TError,ReenviarConviteAcessoMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof reenviarConviteAcesso>>, TError,ReenviarConviteAcessoMutationVariables, TContext> => {
+
+const mutationKey = getReenviarConviteAcessoMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof reenviarConviteAcesso>>, ReenviarConviteAcessoMutationVariables> = (props) => {
+          const {id} = props ?? {};
+
+          return  reenviarConviteAcesso(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReenviarConviteAcessoMutationResult = NonNullable<Awaited<ReturnType<typeof reenviarConviteAcesso>>>
+
+    export type ReenviarConviteAcessoMutationError = ErrorType<unknown>
+    export type ReenviarConviteAcessoMutationVariables = {id: string}
+
+    /**
+ * @summary Reenvia convite de acesso (master)
+ */
+export const useReenviarConviteAcesso = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reenviarConviteAcesso>>, TError,ReenviarConviteAcessoMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof reenviarConviteAcesso>>,
+        TError,
+        ReenviarConviteAcessoMutationVariables,
+        TContext
+      > => {
+      return useMutation(getReenviarConviteAcessoMutationOptions(options));
     }
 
 export const getAtualizarAcessoUrl = (id: string,) => {

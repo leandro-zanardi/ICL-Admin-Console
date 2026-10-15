@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import { clerkClient } from "@clerk/express";
 import { eq } from "drizzle-orm";
 import { acessosTable, db, type Acesso } from "@workspace/db";
 import {
@@ -9,10 +10,13 @@ import {
   CriarAcessoResponse,
   ListAcessosResponse,
   RemoverAcessoParams,
+  ReenviarConviteAcessoParams,
+  ReenviarConviteAcessoResponse,
 } from "@workspace/api-zod";
 import { getSnapshot, type Snapshot } from "../lib/snapshot";
 import { cnpjRaiz, sessaoDeAcesso } from "../lib/escopo";
 import { validar } from "../lib/http";
+import { logger } from "../lib/logger";
 import { somenteMaster } from "../middlewares/acesso";
 
 const router: IRouter = Router();
@@ -36,6 +40,18 @@ function apresentar(a: Acesso, snap: Snapshot) {
 function idNumerico(raw: string): number | null {
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+async function enviarConvite(email: string): Promise<"enviado" | "conta_existente"> {
+  const contas = await clerkClient.users.getUserList({ emailAddress: [email], limit: 1 });
+  if (contas.data.length > 0) return "conta_existente";
+  await clerkClient.invitations.createInvitation({
+    emailAddress: email,
+    redirectUrl: "/sign-up",
+    notify: true,
+    ignoreExisting: true,
+  });
+  return "enviado";
 }
 
 router.get("/acessos", async (_req, res): Promise<void> => {
@@ -79,7 +95,35 @@ router.post("/acessos", async (req, res): Promise<void> => {
     res.status(409).json({ erro: "Já existe um acesso cadastrado para este e-mail." });
     return;
   }
-  res.status(201).json(CriarAcessoResponse.parse(apresentar(criado, snap)));
+  let conviteStatus: "enviado" | "conta_existente" | "falha" = "falha";
+  try {
+    conviteStatus = await enviarConvite(email);
+  } catch (err) {
+    logger.error({ err }, "Acesso criado, mas não foi possível enviar convite do Clerk");
+  }
+  res.status(201).json(CriarAcessoResponse.parse({ ...apresentar(criado, snap), conviteStatus }));
+});
+
+router.post("/acessos/:id/convite", async (req, res): Promise<void> => {
+  const p = validar(ReenviarConviteAcessoParams, req.params, res);
+  if (!p) return;
+  const id = idNumerico(p.id);
+  if (id == null) {
+    res.status(404).json({ erro: "Acesso não encontrado." });
+    return;
+  }
+  const [acesso] = await db.select().from(acessosTable).where(eq(acessosTable.id, id));
+  if (!acesso || acesso.papel !== "posto") {
+    res.status(404).json({ erro: "Acesso de posto não encontrado." });
+    return;
+  }
+  try {
+    const conviteStatus = await enviarConvite(acesso.email);
+    res.json(ReenviarConviteAcessoResponse.parse({ conviteStatus }));
+  } catch (err) {
+    logger.error({ err }, "Não foi possível reenviar convite do Clerk");
+    res.status(502).json({ erro: "Não foi possível enviar o convite. Tente novamente." });
+  }
 });
 
 router.put("/acessos/:id", async (req, res): Promise<void> => {

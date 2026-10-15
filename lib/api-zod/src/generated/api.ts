@@ -1012,7 +1012,8 @@ export const ListAcessosResponseItem = zod.object({
   "cnpjRaiz": zod.string().nullish()
 }),
   "postoNome": zod.string().nullish(),
-  "criadoEm": zod.coerce.date()
+  "criadoEm": zod.coerce.date(),
+  "conviteStatus": zod.enum(['enviado', 'conta_existente', 'falha']).optional()
 })
 export const ListAcessosResponse = zod.array(ListAcessosResponseItem)
 
@@ -1038,7 +1039,20 @@ export const CriarAcessoResponse = zod.object({
   "cnpjRaiz": zod.string().nullish()
 }),
   "postoNome": zod.string().nullish(),
-  "criadoEm": zod.coerce.date()
+  "criadoEm": zod.coerce.date(),
+  "conviteStatus": zod.enum(['enviado', 'conta_existente', 'falha']).optional()
+})
+
+
+/**
+ * @summary Reenvia convite de acesso (master)
+ */
+export const ReenviarConviteAcessoParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const ReenviarConviteAcessoResponse = zod.object({
+  "conviteStatus": zod.enum(['enviado', 'conta_existente'])
 })
 
 
@@ -1066,7 +1080,8 @@ export const AtualizarAcessoResponse = zod.object({
   "cnpjRaiz": zod.string().nullish()
 }),
   "postoNome": zod.string().nullish(),
-  "criadoEm": zod.coerce.date()
+  "criadoEm": zod.coerce.date(),
+  "conviteStatus": zod.enum(['enviado', 'conta_existente', 'falha']).optional()
 })
 
 

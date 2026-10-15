@@ -514,6 +514,15 @@ export interface RankingPagina {
   configuracao: ConfiguracaoRanking;
 }
 
+export type AcessoConviteStatus = typeof AcessoConviteStatus[keyof typeof AcessoConviteStatus];
+
+
+export const AcessoConviteStatus = {
+  enviado: 'enviado',
+  conta_existente: 'conta_existente',
+  falha: 'falha',
+} as const;
+
 export interface Acesso {
   id: string;
   email: string;
@@ -524,6 +533,19 @@ export interface Acesso {
   /** @nullable */
   postoNome?: string | null;
   criadoEm: string;
+  conviteStatus?: AcessoConviteStatus;
+}
+
+export type ConviteAcessoConviteStatus = typeof ConviteAcessoConviteStatus[keyof typeof ConviteAcessoConviteStatus];
+
+
+export const ConviteAcessoConviteStatus = {
+  enviado: 'enviado',
+  conta_existente: 'conta_existente',
+} as const;
+
+export interface ConviteAcesso {
+  conviteStatus: ConviteAcessoConviteStatus;
 }
 
 export type NovoAcessoEscopoTipo = typeof NovoAcessoEscopoTipo[keyof typeof NovoAcessoEscopoTipo];
