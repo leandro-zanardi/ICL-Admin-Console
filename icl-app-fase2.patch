@@ -1,0 +1,3131 @@
+From d52aae12f47073c7ba7f6e2d1f1eeed3bcfefecf Mon Sep 17 00:00:00 2001
+From: Leandro Lamanna Zanardi <leandro.zanardi@sietch.tech>
+Date: Thu, 15 Oct 2026 22:12:21 +0000
+Subject: [PATCH] Implementa fase 2 antifraude no app ICL
+
+---
+ artifacts/api-server/package.json             |   2 +
+ artifacts/api-server/src/lib/auth.ts          |  31 ++
+ artifacts/api-server/src/lib/objectAcl.ts     | 106 +++++
+ artifacts/api-server/src/lib/objectStorage.ts | 199 +++++++++
+ artifacts/api-server/src/routes/denuncias.ts  | 203 +++++++--
+ artifacts/api-server/src/routes/index.ts      |   2 +
+ artifacts/api-server/src/routes/storage.ts    |  35 ++
+ .../src/components/MinhasDenuncias.tsx        | 106 ++++-
+ .../src/contexts/DenunciaQueueContext.tsx     |  81 +++-
+ .../src/pages/AdminDenuncias.tsx              |   2 +
+ .../combustivel-legal/src/pages/Denunciar.tsx | 150 ++++++-
+ .../src/generated/api.schemas.ts              |  81 ++++
+ lib/api-client-react/src/generated/api.ts     | 146 +++++++
+ lib/api-spec/openapi.yaml                     | 106 ++++-
+ lib/api-zod/src/generated/api.ts              | 132 +++++-
+ .../src/generated/types/anexoUploadInput.ts   |  22 +
+ .../types/anexoUploadInputContentType.ts      |  16 +
+ .../src/generated/types/anexoUploadUrl.ts     |  12 +
+ .../generated/types/denunciaAcompanhamento.ts |   2 +
+ .../src/generated/types/denunciaAnexo.ts      |  24 ++
+ .../generated/types/denunciaAnexoMimeType.ts  |  16 +
+ .../src/generated/types/denunciaInput.ts      |  20 +
+ .../src/generated/types/denunciaStatus.ts     |   3 +
+ lib/api-zod/src/generated/types/index.ts      |   6 +
+ .../generated/types/retiradaDenunciaInput.ts  |  12 +
+ lib/db/src/schema/index.ts                    |  16 +-
+ pnpm-lock.yaml                                | 397 ++++++++++++++++++
+ 27 files changed, 1844 insertions(+), 84 deletions(-)
+ create mode 100644 artifacts/api-server/src/lib/objectAcl.ts
+ create mode 100644 artifacts/api-server/src/lib/objectStorage.ts
+ create mode 100644 artifacts/api-server/src/routes/storage.ts
+ create mode 100644 lib/api-zod/src/generated/types/anexoUploadInput.ts
+ create mode 100644 lib/api-zod/src/generated/types/anexoUploadInputContentType.ts
+ create mode 100644 lib/api-zod/src/generated/types/anexoUploadUrl.ts
+ create mode 100644 lib/api-zod/src/generated/types/denunciaAnexo.ts
+ create mode 100644 lib/api-zod/src/generated/types/denunciaAnexoMimeType.ts
+ create mode 100644 lib/api-zod/src/generated/types/retiradaDenunciaInput.ts
+
+diff --git a/artifacts/api-server/package.json b/artifacts/api-server/package.json
+index ce2f954..a999760 100644
+--- a/artifacts/api-server/package.json
++++ b/artifacts/api-server/package.json
+@@ -11,12 +11,14 @@
+     "typecheck": "tsc -p tsconfig.json --noEmit"
+   },
+   "dependencies": {
++    "@google-cloud/storage": "^8.4.0",
+     "@workspace/api-zod": "workspace:*",
+     "@workspace/db": "workspace:*",
+     "cookie-parser": "^1.4.7",
+     "cors": "^2.8.6",
+     "drizzle-orm": "catalog:",
+     "express": "^5.2.1",
++    "google-auth-library": "^11.3.0",
+     "pino": "^9.14.0",
+     "pino-http": "^10.5.0",
+     "zod": "catalog:"
+diff --git a/artifacts/api-server/src/lib/auth.ts b/artifacts/api-server/src/lib/auth.ts
+index e10e01e..c134ade 100644
+--- a/artifacts/api-server/src/lib/auth.ts
++++ b/artifacts/api-server/src/lib/auth.ts
+@@ -48,3 +48,34 @@ export async function requireAuth(
+   req.userId = usuario.id;
+   next();
+ }
++
++/**
++ * Reconhece a conta quando há token, mas mantém o fluxo anônimo por sessão.
++ * Tokens inválidos continuam sendo rejeitados em vez de rebaixados para anônimo.
++ */
++export async function optionalAuth(
++  req: Request,
++  res: Response,
++  next: NextFunction,
++): Promise<void> {
++  const header = req.header("authorization") ?? "";
++  if (!header) {
++    next();
++    return;
++  }
++
++  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
++  if (!UUID_RE.test(token)) {
++    res.status(401).json({ erro: "Sessão inválida. Entre novamente." });
++    return;
++  }
++
++  const [usuario] = await db.select().from(usuarios).where(eq(usuarios.id, token)).limit(1);
++  if (!usuario) {
++    res.status(401).json({ erro: "Sessão expirada. Entre novamente." });
++    return;
++  }
++
++  req.userId = usuario.id;
++  next();
++}
+diff --git a/artifacts/api-server/src/lib/objectAcl.ts b/artifacts/api-server/src/lib/objectAcl.ts
+new file mode 100644
+index 0000000..8c42af3
+--- /dev/null
++++ b/artifacts/api-server/src/lib/objectAcl.ts
+@@ -0,0 +1,106 @@
++import { File } from "@google-cloud/storage";
++
++const ACL_POLICY_METADATA_KEY = "custom:aclPolicy";
++
++export enum ObjectAccessGroupType {}
++
++export interface ObjectAccessGroup {
++  type: ObjectAccessGroupType;
++  id: string;
++}
++
++export enum ObjectPermission {
++  READ = "read",
++  WRITE = "write",
++}
++
++export interface ObjectAclRule {
++  group: ObjectAccessGroup;
++  permission: ObjectPermission;
++}
++
++export interface ObjectAclPolicy {
++  owner: string;
++  visibility: "public" | "private";
++  aclRules?: Array<ObjectAclRule>;
++}
++
++function isPermissionAllowed(requested: ObjectPermission, granted: ObjectPermission): boolean {
++  if (requested === ObjectPermission.READ) {
++    return [ObjectPermission.READ, ObjectPermission.WRITE].includes(granted);
++  }
++  return granted === ObjectPermission.WRITE;
++}
++
++abstract class BaseObjectAccessGroup implements ObjectAccessGroup {
++  constructor(
++    public readonly type: ObjectAccessGroupType,
++    public readonly id: string,
++  ) {}
++
++  public abstract hasMember(userId: string): Promise<boolean>;
++}
++
++function createObjectAccessGroup(group: ObjectAccessGroup): BaseObjectAccessGroup {
++  switch (group.type) {
++    default:
++      throw new Error(`Unknown access group type: ${group.type}`);
++  }
++}
++
++export async function setObjectAclPolicy(objectFile: File, aclPolicy: ObjectAclPolicy): Promise<void> {
++  const [exists] = await objectFile.exists();
++  if (!exists) {
++    throw new Error(`Object not found: ${objectFile.name}`);
++  }
++
++  await objectFile.setMetadata({
++    metadata: {
++      [ACL_POLICY_METADATA_KEY]: JSON.stringify(aclPolicy),
++    },
++  });
++}
++
++export async function getObjectAclPolicy(objectFile: File): Promise<ObjectAclPolicy | null> {
++  const [metadata] = await objectFile.getMetadata();
++  const aclPolicy = metadata?.metadata?.[ACL_POLICY_METADATA_KEY];
++  if (!aclPolicy) {
++    return null;
++  }
++  return JSON.parse(aclPolicy as string);
++}
++
++export async function canAccessObject({
++  userId,
++  objectFile,
++  requestedPermission,
++}: {
++  userId?: string;
++  objectFile: File;
++  requestedPermission: ObjectPermission;
++}): Promise<boolean> {
++  const aclPolicy = await getObjectAclPolicy(objectFile);
++  if (!aclPolicy) {
++    return false;
++  }
++
++  if (aclPolicy.visibility === "public" && requestedPermission === ObjectPermission.READ) {
++    return true;
++  }
++  if (!userId) {
++    return false;
++  }
++  if (aclPolicy.owner === userId) {
++    return true;
++  }
++  for (const rule of aclPolicy.aclRules || []) {
++    const accessGroup = createObjectAccessGroup(rule.group);
++    if (
++      (await accessGroup.hasMember(userId)) &&
++      isPermissionAllowed(requestedPermission, rule.permission)
++    ) {
++      return true;
++    }
++  }
++  return false;
++}
+diff --git a/artifacts/api-server/src/lib/objectStorage.ts b/artifacts/api-server/src/lib/objectStorage.ts
+new file mode 100644
+index 0000000..7b1e035
+--- /dev/null
++++ b/artifacts/api-server/src/lib/objectStorage.ts
+@@ -0,0 +1,199 @@
++import { randomUUID } from "crypto";
++import { Readable } from "stream";
++import { File, Storage } from "@google-cloud/storage";
++
++import {
++  canAccessObject,
++  getObjectAclPolicy,
++  type ObjectAclPolicy,
++  ObjectPermission,
++  setObjectAclPolicy,
++} from "./objectAcl";
++
++const REPLIT_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
++
++export const objectStorageClient = new Storage({
++  credentials: {
++    audience: "replit",
++    subject_token_type: "access_token",
++    token_url: `${REPLIT_SIDECAR_ENDPOINT}/token`,
++    type: "external_account",
++    credential_source: {
++      url: `${REPLIT_SIDECAR_ENDPOINT}/credential`,
++      format: {
++        type: "json",
++        subject_token_field_name: "access_token",
++      },
++    },
++    universe_domain: "googleapis.com",
++  },
++  projectId: "",
++});
++
++export class ObjectNotFoundError extends Error {
++  constructor() {
++    super("Object not found");
++    this.name = "ObjectNotFoundError";
++    Object.setPrototypeOf(this, ObjectNotFoundError.prototype);
++  }
++}
++
++export class ObjectStorageService {
++  getPublicObjectSearchPaths(): Array<string> {
++    const pathsStr = process.env.PUBLIC_OBJECT_SEARCH_PATHS || "";
++    const paths = Array.from(
++      new Set(
++        pathsStr
++          .split(",")
++          .map((path) => path.trim())
++          .filter((path) => path.length > 0),
++      ),
++    );
++    if (paths.length === 0) {
++      throw new Error(
++        "PUBLIC_OBJECT_SEARCH_PATHS not set. Create a bucket in 'Object Storage' tool and set PUBLIC_OBJECT_SEARCH_PATHS env var (comma-separated paths).",
++      );
++    }
++    return paths;
++  }
++
++  getPrivateObjectDir(): string {
++    const dir = process.env.PRIVATE_OBJECT_DIR || "";
++    if (!dir) {
++      throw new Error(
++        "PRIVATE_OBJECT_DIR not set. Create a bucket in 'Object Storage' tool and set PRIVATE_OBJECT_DIR env var.",
++      );
++    }
++    return dir;
++  }
++
++  async searchPublicObject(filePath: string): Promise<File | null> {
++    for (const searchPath of this.getPublicObjectSearchPaths()) {
++      const { bucketName, objectName } = parseObjectPath(`${searchPath}/${filePath}`);
++      const file = objectStorageClient.bucket(bucketName).file(objectName);
++      const [exists] = await file.exists();
++      if (exists) return file;
++    }
++    return null;
++  }
++
++  async downloadObject(file: File, cacheTtlSec = 3600): Promise<Response> {
++    const [metadata] = await file.getMetadata();
++    const aclPolicy = await getObjectAclPolicy(file);
++    const isPublic = aclPolicy?.visibility === "public";
++    const webStream = Readable.toWeb(file.createReadStream()) as ReadableStream;
++    const headers: Record<string, string> = {
++      "Content-Type": (metadata.contentType as string) || "application/octet-stream",
++      "Cache-Control": `${isPublic ? "public" : "private"}, max-age=${cacheTtlSec}`,
++    };
++    if (metadata.size) headers["Content-Length"] = String(metadata.size);
++    return new Response(webStream, { headers });
++  }
++
++  async getObjectEntityUploadURL(): Promise<string> {
++    const privateObjectDir = this.getPrivateObjectDir();
++    const { bucketName, objectName } = parseObjectPath(
++      `${privateObjectDir}/uploads/${randomUUID()}`,
++    );
++    return signObjectURL({ bucketName, objectName, method: "PUT", ttlSec: 900 });
++  }
++
++  async getObjectEntityFile(objectPath: string): Promise<File> {
++    if (!objectPath.startsWith("/objects/")) throw new ObjectNotFoundError();
++    const parts = objectPath.slice(1).split("/");
++    if (parts.length < 2) throw new ObjectNotFoundError();
++
++    let entityDir = this.getPrivateObjectDir();
++    if (!entityDir.endsWith("/")) entityDir = `${entityDir}/`;
++    const entityId = parts.slice(1).join("/");
++    const { bucketName, objectName } = parseObjectPath(`${entityDir}${entityId}`);
++    const file = objectStorageClient.bucket(bucketName).file(objectName);
++    const [exists] = await file.exists();
++    if (!exists) throw new ObjectNotFoundError();
++    return file;
++  }
++
++  normalizeObjectEntityPath(rawPath: string): string {
++    if (!rawPath.startsWith("https://storage.googleapis.com/")) return rawPath;
++    const rawObjectPath = new URL(rawPath).pathname;
++    let objectEntityDir = this.getPrivateObjectDir();
++    if (!objectEntityDir.endsWith("/")) objectEntityDir = `${objectEntityDir}/`;
++    if (!rawObjectPath.startsWith(objectEntityDir)) return rawObjectPath;
++    return `/objects/${rawObjectPath.slice(objectEntityDir.length)}`;
++  }
++
++  async trySetObjectEntityAclPolicy(rawPath: string, aclPolicy: ObjectAclPolicy): Promise<string> {
++    const normalizedPath = this.normalizeObjectEntityPath(rawPath);
++    if (!normalizedPath.startsWith("/")) return normalizedPath;
++    const objectFile = await this.getObjectEntityFile(normalizedPath);
++    await setObjectAclPolicy(objectFile, aclPolicy);
++    return normalizedPath;
++  }
++
++  async canAccessObjectEntity({
++    userId,
++    objectFile,
++    requestedPermission,
++  }: {
++    userId?: string;
++    objectFile: File;
++    requestedPermission?: ObjectPermission;
++  }): Promise<boolean> {
++    return canAccessObject({
++      userId,
++      objectFile,
++      requestedPermission: requestedPermission ?? ObjectPermission.READ,
++    });
++  }
++}
++
++function parseObjectPath(path: string): { bucketName: string; objectName: string } {
++  if (!path.startsWith("/")) path = `/${path}`;
++  const pathParts = path.split("/");
++  if (pathParts.length < 3) {
++    throw new Error("Invalid path: must contain at least a bucket name");
++  }
++  return {
++    bucketName: pathParts[1],
++    objectName: pathParts.slice(2).join("/"),
++  };
++}
++
++async function signObjectURL({
++  bucketName,
++  objectName,
++  method,
++  ttlSec,
++}: {
++  bucketName: string;
++  objectName: string;
++  method: "GET" | "PUT" | "DELETE" | "HEAD";
++  ttlSec: number;
++}): Promise<string> {
++  const response = await fetch(`${REPLIT_SIDECAR_ENDPOINT}/object-storage/signed-object-url`, {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify({
++      bucket_name: bucketName,
++      object_name: objectName,
++      method,
++      expires_at: new Date(Date.now() + ttlSec * 1000).toISOString(),
++    }),
++    signal: AbortSignal.timeout(30_000),
++  });
++  if (!response.ok) {
++    throw new Error(
++      `Failed to sign object URL, errorcode: ${response.status}, make sure you're running on Replit`,
++    );
++  }
++  const payload: unknown = await response.json();
++  if (
++    typeof payload !== "object" ||
++    payload === null ||
++    !("signed_url" in payload) ||
++    typeof payload.signed_url !== "string"
++  ) {
++    throw new Error("The storage service returned an invalid signed URL response");
++  }
++  return payload.signed_url;
++}
+diff --git a/artifacts/api-server/src/routes/denuncias.ts b/artifacts/api-server/src/routes/denuncias.ts
+index b72a67a..75b5d40 100644
+--- a/artifacts/api-server/src/routes/denuncias.ts
++++ b/artifacts/api-server/src/routes/denuncias.ts
+@@ -1,11 +1,21 @@
+ import { Router, type IRouter } from "express";
+-import { CriarDenunciaBody } from "@workspace/api-zod";
++import {
++  CriarDenunciaBody,
++  CriarDenunciaResponse,
++  ListarMinhasDenunciasResponse,
++  RetirarDenunciaBody,
++  RetirarDenunciaParams,
++  RetirarDenunciaResponse,
++} from "@workspace/api-zod";
+ import { db, denunciaAndamentos, denuncias, postos } from "@workspace/db";
+-import { and, desc, eq, inArray, sql } from "drizzle-orm";
++import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+ import { publicarEvento } from "../lib/sse";
++import { optionalAuth } from "../lib/auth";
++import { ObjectNotFoundError, ObjectStorageService } from "../lib/objectStorage";
+ import { validar } from "../lib/validar";
+ 
+ const router: IRouter = Router();
++const objectStorage = new ObjectStorageService();
+ 
+ const CATEGORIA_LABEL: Record<string, string> = {
+   qualidade_combustivel: "qualidade do combustível",
+@@ -42,6 +52,7 @@ export async function apresentarDenuncias(lista: (typeof denuncias.$inferSelect)
+     descricao: d.descricao,
+     status: d.status,
+     criado_em: d.criadoEm.toISOString(),
++    anexos: d.anexos ?? [],
+     andamentos: andamentos
+       .filter((a) => a.denunciaId === d.id)
+       .map((a) => ({
+@@ -54,37 +65,96 @@ export async function apresentarDenuncias(lista: (typeof denuncias.$inferSelect)
+   }));
+ }
+ 
+-router.get("/denuncias", async (req, res) => {
+-  if (!req.sessionId) {
++function ownerCondition(req: { userId?: string; sessionId?: string | null }) {
++  const anonymousSession =
++    req.sessionId
++      ? and(isNull(denuncias.userId), eq(denuncias.sessionId, req.sessionId))
++      : undefined;
++  if (req.userId && anonymousSession) {
++    return or(eq(denuncias.userId, req.userId), anonymousSession);
++  }
++  if (req.userId) return eq(denuncias.userId, req.userId);
++  return anonymousSession;
++}
++
++router.get("/denuncias", optionalAuth, async (req, res): Promise<void> => {
++  const owner = ownerCondition(req);
++  if (!owner) {
+     res.json([]);
+     return;
+   }
+   const lista = await db
+     .select()
+     .from(denuncias)
+-    .where(eq(denuncias.sessionId, req.sessionId))
++    .where(owner)
+     .orderBy(desc(denuncias.criadoEm))
+     .limit(100);
+-  res.json(await apresentarDenuncias(lista));
++  res.json(ListarMinhasDenunciasResponse.parse(await apresentarDenuncias(lista)));
+ });
+ 
+-router.post("/denuncias", async (req, res) => {
++router.post("/denuncias", optionalAuth, async (req, res): Promise<void> => {
+   const body = validar(CriarDenunciaBody, req.body, res);
+   if (!body) return;
++  if (!req.userId && !req.sessionId) {
++    res.status(401).json({ erro: "Inicie uma sessão para registrar a denúncia." });
++    return;
++  }
++  if ((body.lat == null) !== (body.lng == null) || (body.lat == null && body.precisao_m != null)) {
++    res.status(400).json({ erro: "Latitude e longitude devem ser informadas juntas." });
++    return;
++  }
+ 
+   // Reenvio da mesma denúncia (mesmo aparelho): devolve o protocolo existente.
+-  if (req.sessionId && body.client_id) {
+-    const [existente] = await db
+-      .select()
+-      .from(denuncias)
+-      .where(and(eq(denuncias.sessionId, req.sessionId), eq(denuncias.clientId, body.client_id)))
+-      .limit(1);
++  if (body.client_id) {
++    const scopes = [];
++    if (req.userId) {
++      scopes.push(and(eq(denuncias.userId, req.userId), eq(denuncias.clientId, body.client_id)));
++    }
++    if (req.sessionId) {
++      scopes.push(
++        and(
++          isNull(denuncias.userId),
++          eq(denuncias.sessionId, req.sessionId),
++          eq(denuncias.clientId, body.client_id),
++        ),
++      );
++    }
++    const [existente] =
++      scopes.length > 0
++        ? await db
++            .select()
++            .from(denuncias)
++            .where(or(...scopes))
++            .limit(1)
++        : [];
+     if (existente) {
+-      res.status(201).json({
++      res.status(201).json(CriarDenunciaResponse.parse({
+         id: existente.id,
+         protocolo: existente.protocolo,
+         criado_em: existente.criadoEm.toISOString(),
+-      });
++      }));
++      return;
++    }
++  }
++
++  const anexos = body.anexos ?? [];
++  for (const anexo of anexos) {
++    let arquivo;
++    try {
++      arquivo = await objectStorage.getObjectEntityFile(anexo.object_path);
++    } catch (error) {
++      if (error instanceof ObjectNotFoundError) {
++        res.status(400).json({ erro: "Uma das fotos enviadas não foi encontrada." });
++        return;
++      }
++      throw error;
++    }
++    const [metadata] = await arquivo.getMetadata();
++    if (
++      Number(metadata.size) !== anexo.size_bytes ||
++      String(metadata.contentType).toLowerCase() !== anexo.mime_type
++    ) {
++      res.status(400).json({ erro: "Uma das fotos enviadas está inválida." });
+       return;
+     }
+   }
+@@ -103,25 +173,36 @@ router.post("/denuncias", async (req, res) => {
+   const [{ total }] = await db.select({ total: sql<number>`count(*)::int` }).from(denuncias);
+   const protocolo = `ICL-${new Date().getFullYear()}-${String(total + 1).padStart(6, "0")}`;
+ 
+-  const [criada] = await db
+-    .insert(denuncias)
+-    .values({
+-      protocolo,
+-      categoria: body.categoria,
+-      postoId,
+-      municipio,
+-      descricao: body.descricao,
+-      fotoNome: body.foto_nome ?? null,
+-      sessionId: req.sessionId ?? null,
+-      clientId: body.client_id ?? null,
+-    })
+-    .returning();
+-
+-  await db.insert(denunciaAndamentos).values({
+-    denunciaId: criada.id,
+-    status: "recebida",
+-    orgao: "ICL",
+-    mensagem: "Denúncia recebida pelo ICL.",
++  const criada = await db.transaction(async (tx) => {
++    const [nova] = await tx
++      .insert(denuncias)
++      .values({
++        protocolo,
++        categoria: body.categoria,
++        postoId,
++        municipio,
++        descricao: body.descricao,
++        fotoNome: anexos[0]?.name ?? body.foto_nome ?? null,
++        fotoUrl: anexos[0]?.object_path ?? null,
++        fotoTipo: anexos[0]?.mime_type ?? null,
++        anexos,
++        status: "recebida",
++        userId: req.userId ?? null,
++        sessionId: req.sessionId ?? null,
++        clientId: body.client_id ?? null,
++        lat: body.lat ?? null,
++        lng: body.lng ?? null,
++        precisaoM: body.precisao_m ?? null,
++      })
++      .returning();
++
++    await tx.insert(denunciaAndamentos).values({
++      denunciaId: nova.id,
++      status: "recebida",
++      orgao: "ICL",
++      mensagem: "Denúncia recebida pelo ICL.",
++    });
++    return nova;
+   });
+ 
+   publicarEvento({
+@@ -132,11 +213,63 @@ router.post("/denuncias", async (req, res) => {
+     sessionId: req.sessionId,
+   }).catch(() => undefined);
+ 
+-  res.status(201).json({
++  res.status(201).json(CriarDenunciaResponse.parse({
+     id: criada.id,
+     protocolo: criada.protocolo,
+     criado_em: criada.criadoEm.toISOString(),
++  }));
++});
++
++router.post("/denuncias/:id/retirada", optionalAuth, async (req, res): Promise<void> => {
++  const params = validar(RetirarDenunciaParams, req.params, res);
++  if (!params) return;
++  const body = validar(RetirarDenunciaBody, req.body ?? {}, res);
++  if (!body) return;
++
++  const owner = ownerCondition(req);
++  if (!owner) {
++    res.status(404).json({ erro: "Denúncia não encontrada." });
++    return;
++  }
++
++  const resultado = await db.transaction(async (tx) => {
++    const [denuncia] = await tx
++      .select()
++      .from(denuncias)
++      .where(and(eq(denuncias.id, params.id), owner))
++      .for("update")
++      .limit(1);
++    if (!denuncia) return { kind: "not-found" as const };
++    if (denuncia.status === "retirada") return { kind: "already-withdrawn" as const };
++
++    const motivo = body.motivo?.trim();
++    const [atualizada] = await tx
++      .update(denuncias)
++      .set({ status: "retirada" })
++      .where(eq(denuncias.id, denuncia.id))
++      .returning();
++    await tx.insert(denunciaAndamentos).values({
++      denunciaId: denuncia.id,
++      status: "retirada",
++      orgao: "Cliente",
++      mensagem: motivo
++        ? `Denúncia retirada pelo cliente. Motivo: ${motivo}`
++        : "Denúncia retirada pelo cliente.",
++    });
++    return { kind: "ok" as const, denuncia: atualizada };
+   });
++
++  if (resultado.kind === "not-found") {
++    res.status(404).json({ erro: "Denúncia não encontrada." });
++    return;
++  }
++  if (resultado.kind === "already-withdrawn") {
++    res.status(409).json({ erro: "Esta denúncia já foi retirada." });
++    return;
++  }
++
++  const [apresentada] = await apresentarDenuncias([resultado.denuncia]);
++  res.json(RetirarDenunciaResponse.parse(apresentada));
+ });
+ 
+ export default router;
+diff --git a/artifacts/api-server/src/routes/index.ts b/artifacts/api-server/src/routes/index.ts
+index 12dc12f..480f3ef 100644
+--- a/artifacts/api-server/src/routes/index.ts
++++ b/artifacts/api-server/src/routes/index.ts
+@@ -12,6 +12,7 @@ import postosRouter from "./postos";
+ import recompensasRouter from "./recompensas";
+ import resgatesRouter from "./resgates";
+ import rotasRouter from "./rotas";
++import storageRouter from "./storage";
+ 
+ const router: IRouter = Router();
+ 
+@@ -25,6 +26,7 @@ router.use(checkinsRouter);
+ router.use(recompensasRouter);
+ router.use(resgatesRouter);
+ router.use(denunciasRouter);
++router.use(storageRouter);
+ router.use(apresentacaoRouter);
+ router.use(demoRouter);
+ router.use(adminRouter);
+diff --git a/artifacts/api-server/src/routes/storage.ts b/artifacts/api-server/src/routes/storage.ts
+new file mode 100644
+index 0000000..690add6
+--- /dev/null
++++ b/artifacts/api-server/src/routes/storage.ts
+@@ -0,0 +1,35 @@
++import {
++  SolicitarUploadUrlBody,
++  SolicitarUploadUrlResponse,
++} from "@workspace/api-zod";
++import { Router, type IRouter } from "express";
++import { optionalAuth } from "../lib/auth";
++import { ObjectStorageService } from "../lib/objectStorage";
++import { validar } from "../lib/validar";
++
++const router: IRouter = Router();
++const objectStorage = new ObjectStorageService();
++
++router.post("/storage/uploads/request-url", optionalAuth, async (req, res): Promise<void> => {
++  if (!req.userId && !req.sessionId) {
++    res.status(401).json({ erro: "Inicie uma sessão para anexar fotos." });
++    return;
++  }
++
++  const body = validar(SolicitarUploadUrlBody, req.body, res);
++  if (!body) return;
++
++  try {
++    const uploadUrl = await objectStorage.getObjectEntityUploadURL();
++    const response = SolicitarUploadUrlResponse.parse({
++      upload_url: uploadUrl,
++      object_path: objectStorage.normalizeObjectEntityPath(uploadUrl),
++    });
++    res.json(response);
++  } catch (error) {
++    req.log.error({ err: error }, "Não foi possível preparar o upload do anexo");
++    res.status(503).json({ erro: "Armazenamento de fotos indisponível no momento." });
++  }
++});
++
++export default router;
+diff --git a/artifacts/combustivel-legal/src/components/MinhasDenuncias.tsx b/artifacts/combustivel-legal/src/components/MinhasDenuncias.tsx
+index 17902f8..1973b52 100644
+--- a/artifacts/combustivel-legal/src/components/MinhasDenuncias.tsx
++++ b/artifacts/combustivel-legal/src/components/MinhasDenuncias.tsx
+@@ -1,8 +1,18 @@
+ import { useEffect, useMemo, useState } from 'react';
+-import { useListarMinhasDenuncias, type DenunciaAcompanhamento } from '@workspace/api-client-react';
+-import { ChevronDown, Clock3, CheckCircle2, Send, MessageSquareReply, MapPin } from 'lucide-react';
++import {
++  useListarMinhasDenuncias,
++  useRetirarDenuncia,
++  getListarMinhasDenunciasQueryKey,
++  type DenunciaAcompanhamento,
++  type DenunciaStatus,
++} from '@workspace/api-client-react';
++import { ChevronDown, Clock3, CheckCircle2, Send, MessageSquareReply, MapPin, XCircle } from 'lucide-react';
+ import { useDenunciaQueue } from '@/contexts/DenunciaQueueContext';
+ import { cn } from '@/lib/utils';
++import { useAuth } from '@/contexts/AuthContext';
++import { Button } from '@/components/ui/button';
++import { Textarea } from '@/components/ui/textarea';
++import { toast } from '@/hooks/use-toast';
+ 
+ export const CATEGORIA_LABEL: Record<string, string> = {
+   qualidade_combustivel: 'Qualidade do combustível',
+@@ -11,13 +21,16 @@ export const CATEGORIA_LABEL: Record<string, string> = {
+   outra: 'Outra irregularidade',
+ };
+ 
+-type Status = 'aguardando' | 'recebida' | 'encaminhada' | 'respondida';
++type Status = 'aguardando' | DenunciaStatus;
+ 
+ const STATUS_INFO: Record<Status, { label: string; className: string; icon: typeof Clock3 }> = {
+   aguardando: { label: 'Aguardando envio', className: 'bg-amber-100 text-amber-800', icon: Clock3 },
+   recebida: { label: 'Recebida pelo ICL', className: 'bg-blue-100 text-blue-800', icon: CheckCircle2 },
+   encaminhada: { label: 'Encaminhada à ANP/órgão', className: 'bg-indigo-100 text-indigo-800', icon: Send },
+   respondida: { label: 'Respondida / concluída', className: 'bg-green-100 text-green-800', icon: MessageSquareReply },
++  aguardando_posto: { label: 'Aguardando resposta do posto', className: 'bg-amber-100 text-amber-800', icon: Clock3 },
++  respondida_pelo_posto: { label: 'Respondida pelo posto', className: 'bg-green-100 text-green-800', icon: MessageSquareReply },
++  retirada: { label: 'Retirada pelo cliente', className: 'bg-slate-100 text-slate-700', icon: XCircle },
+ };
+ 
+ type Entry = {
+@@ -29,6 +42,7 @@ type Entry = {
+   descricao: string;
+   criadoEm: string;
+   status: Status;
++  canWithdraw: boolean;
+   error?: string;
+   andamentos: DenunciaAcompanhamento['andamentos'];
+ };
+@@ -38,10 +52,21 @@ const fmt = (iso: string) =>
+ 
+ export function MinhasDenuncias() {
+   const { items, sentVersion, retryNow } = useDenunciaQueue();
++  const { token, sessionId } = useAuth();
++  const queryKey = [...getListarMinhasDenunciasQueryKey(), token ?? 'anônimo', sessionId];
+   const { data: remote = [], refetch, isError } = useListarMinhasDenuncias({
+-    query: { refetchInterval: 30_000, refetchOnWindowFocus: true } as never,
++    query: {
++      queryKey,
++      refetchInterval: 30_000,
++      refetchOnWindowFocus: true,
++      refetchOnMount: 'always',
++      staleTime: 0,
++    } as never,
+   });
+   const [open, setOpen] = useState<string | null>(null);
++  const [retiradaAberta, setRetiradaAberta] = useState<string | null>(null);
++  const [motivoRetirada, setMotivoRetirada] = useState('');
++  const retirar = useRetirarDenuncia();
+ 
+   useEffect(() => {
+     void refetch();
+@@ -59,6 +84,7 @@ export function MinhasDenuncias() {
+       descricao: r.descricao,
+       criadoEm: r.criado_em,
+       status: r.status,
++      canWithdraw: true,
+       andamentos: r.andamentos,
+     }));
+     const fromLocal: Entry[] = items
+@@ -72,6 +98,7 @@ export function MinhasDenuncias() {
+         descricao: i.data.descricao,
+         criadoEm: i.createdAt,
+         status: i.status === 'sent' ? 'recebida' : 'aguardando',
++        canWithdraw: false,
+         error: i.error,
+         andamentos: [],
+       }));
+@@ -152,6 +179,77 @@ export function MinhasDenuncias() {
+                       </li>
+                     ))}
+                   </ol>
++                  {e.canWithdraw && e.status !== 'retirada' && (
++                    <div className="mt-4 border-t border-slate-100 pt-3">
++                      {retiradaAberta === e.key ? (
++                        <div className="space-y-2">
++                          <label htmlFor={`motivo-retirada-${e.key}`} className="font-semibold text-slate-700">
++                            Motivo (opcional)
++                          </label>
++                          <Textarea
++                            id={`motivo-retirada-${e.key}`}
++                            value={motivoRetirada}
++                            onChange={(event) => setMotivoRetirada(event.target.value.slice(0, 500))}
++                            maxLength={500}
++                            placeholder="Conte, se quiser, por que o problema foi resolvido."
++                            className="min-h-20 bg-white text-sm"
++                          />
++                          <div className="flex gap-2">
++                            <Button
++                              type="button"
++                              size="sm"
++                              disabled={retirar.isPending}
++                              onClick={() =>
++                                retirar.mutate(
++                                  { id: e.key, data: { motivo: motivoRetirada.trim() || undefined } },
++                                  {
++                                    onSuccess: () => {
++                                      toast({ title: 'Denúncia retirada' });
++                                      setRetiradaAberta(null);
++                                      setMotivoRetirada('');
++                                      void refetch();
++                                    },
++                                    onError: (error) =>
++                                      toast({
++                                        title: 'Não foi possível retirar a denúncia',
++                                        description: error.message,
++                                        variant: 'destructive',
++                                      }),
++                                  },
++                                )
++                              }
++                            >
++                              Confirmar retirada
++                            </Button>
++                            <Button
++                              type="button"
++                              size="sm"
++                              variant="ghost"
++                              disabled={retirar.isPending}
++                              onClick={() => {
++                                setRetiradaAberta(null);
++                                setMotivoRetirada('');
++                              }}
++                            >
++                              Cancelar
++                            </Button>
++                          </div>
++                        </div>
++                      ) : (
++                        <Button
++                          type="button"
++                          variant="outline"
++                          size="sm"
++                          onClick={() => {
++                            setRetiradaAberta(e.key);
++                            setMotivoRetirada('');
++                          }}
++                        >
++                          Já foi resolvido, retirar denúncia
++                        </Button>
++                      )}
++                    </div>
++                  )}
+                 </div>
+               )}
+             </div>
+diff --git a/artifacts/combustivel-legal/src/contexts/DenunciaQueueContext.tsx b/artifacts/combustivel-legal/src/contexts/DenunciaQueueContext.tsx
+index c14d568..6247920 100644
+--- a/artifacts/combustivel-legal/src/contexts/DenunciaQueueContext.tsx
++++ b/artifacts/combustivel-legal/src/contexts/DenunciaQueueContext.tsx
+@@ -1,5 +1,6 @@
+-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
++import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+ import { criarDenuncia, type DenunciaInput, type DenunciaResposta } from '@workspace/api-client-react';
++import { useAuth } from '@/contexts/AuthContext';
+ 
+ const STORAGE_KEY = 'cl_denuncias_local';
+ const LEGACY_KEY = 'cl_denuncia_queue';
+@@ -12,6 +13,8 @@ export type LocalDenuncia = {
+   createdAt: string;
+   provisionalProtocol: string;
+   status: 'pending' | 'sending' | 'sent';
++  ownerUserId: string | null;
++  sessionId: string;
+   error?: string;
+   serverId?: string;
+   protocolo?: string;
+@@ -36,16 +39,24 @@ function provisional(id: string): string {
+   return `PROV-${id.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+ }
+ 
+-function readItems(): LocalDenuncia[] {
++function storageKey(ownerUserId: string | null, sessionId: string): string {
++  return ownerUserId
++    ? `${STORAGE_KEY}:user:${ownerUserId}`
++    : `${STORAGE_KEY}:session:${sessionId}`;
++}
++
++function readItems(key: string, ownerUserId: string | null, sessionId: string): LocalDenuncia[] {
+   try {
+     const parse = (key: string) => {
+       const value = JSON.parse(localStorage.getItem(key) ?? '[]');
+       return Array.isArray(value) ? value : [];
+     };
+-    const current = parse(STORAGE_KEY).filter((i) => i && typeof i.id === 'string' && i.data);
++    const current = parse(key).filter((i) => i && typeof i.id === 'string' && i.data);
+     const known = new Set(current.map((i) => i.id));
+-    // Denúncias da fila antiga ainda não enviadas continuam valendo.
+-    const legacy = parse(LEGACY_KEY)
++    // Filas sem vínculo anterior são migradas apenas para o espaço anônimo do aparelho.
++    const legacy =
++      ownerUserId === null
++        ? [...parse(STORAGE_KEY), ...parse(LEGACY_KEY)]
+       .filter((i) => i && typeof i.id === 'string' && i.data && !known.has(i.id))
+       .map((i) => ({
+         id: i.id,
+@@ -53,11 +64,22 @@ function readItems(): LocalDenuncia[] {
+         createdAt: i.createdAt ?? new Date().toISOString(),
+         provisionalProtocol: provisional(i.id),
+         status: 'pending' as const,
+-      }));
+-    return [...current, ...legacy].map((i) => ({
++        ownerUserId: null,
++        sessionId,
++      }))
++        : [];
++    const result = [...current, ...legacy].map((i) => ({
+       ...i,
+       status: i.status === 'sent' ? 'sent' : 'pending',
++      ownerUserId: typeof i.ownerUserId === 'string' ? i.ownerUserId : ownerUserId,
++      sessionId: typeof i.sessionId === 'string' ? i.sessionId : sessionId,
+     }));
++    if (ownerUserId === null && legacy.length > 0) {
++      localStorage.setItem(key, JSON.stringify(result));
++      localStorage.removeItem(STORAGE_KEY);
++      localStorage.removeItem(LEGACY_KEY);
++    }
++    return result;
+   } catch {
+     return [];
+   }
+@@ -69,7 +91,10 @@ function errorMessage(error: unknown): string {
+ }
+ 
+ export function DenunciaQueueProvider({ children }: { children: ReactNode }) {
+-  const [items, setItems] = useState<LocalDenuncia[]>(readItems);
++  const { token, sessionId } = useAuth();
++  const initialStorageKey = storageKey(token, sessionId);
++  const scopeRef = useRef({ key: initialStorageKey, ownerUserId: token, sessionId });
++  const [items, setItems] = useState<LocalDenuncia[]>(() => readItems(initialStorageKey, token, sessionId));
+   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+   const [sentVersion, setSentVersion] = useState(0);
+   const itemsRef = useRef(items);
+@@ -80,8 +105,7 @@ export function DenunciaQueueProvider({ children }: { children: ReactNode }) {
+     const trimmed = next.filter((i) => i.status !== 'sent' || sent.includes(i));
+     itemsRef.current = trimmed;
+     setItems(trimmed);
+-    localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+-    localStorage.removeItem(LEGACY_KEY);
++    localStorage.setItem(scopeRef.current.key, JSON.stringify(trimmed));
+   }, []);
+ 
+   const patch = useCallback(
+@@ -98,10 +122,24 @@ export function DenunciaQueueProvider({ children }: { children: ReactNode }) {
+       try {
+         for (const snapshot of [...itemsRef.current]) {
+           const current = itemsRef.current.find((i) => i.id === snapshot.id);
+-          if (!current || current.status !== 'pending') continue;
++          const scope = scopeRef.current;
++          if (
++            !current ||
++            current.status !== 'pending' ||
++            current.ownerUserId !== scope.ownerUserId ||
++            current.sessionId !== scope.sessionId
++          ) continue;
+           patch(current.id, { status: 'sending' });
+           try {
+-            const response = await criarDenuncia({ ...current.data, client_id: current.id });
++            const response = await criarDenuncia(
++              { ...current.data, client_id: current.id },
++              {
++                headers: {
++                  authorization: current.ownerUserId ? `Bearer ${current.ownerUserId}` : '',
++                  'x-session-id': current.sessionId,
++                },
++              },
++            );
+             patch(current.id, {
+               status: 'sent',
+               error: undefined,
+@@ -127,7 +165,15 @@ export function DenunciaQueueProvider({ children }: { children: ReactNode }) {
+       const id = crypto.randomUUID();
+       update([
+         ...itemsRef.current,
+-        { id, data, createdAt: new Date().toISOString(), provisionalProtocol: provisional(id), status: 'pending' },
++        {
++          id,
++          data,
++          createdAt: new Date().toISOString(),
++          provisionalProtocol: provisional(id),
++          status: 'pending',
++          ownerUserId: scopeRef.current.ownerUserId,
++          sessionId: scopeRef.current.sessionId,
++        },
+       ]);
+       await flush();
+       const item = itemsRef.current.find((i) => i.id === id);
+@@ -147,6 +193,15 @@ export function DenunciaQueueProvider({ children }: { children: ReactNode }) {
+     void flush();
+   }, [flush]);
+ 
++  useLayoutEffect(() => {
++    const key = storageKey(token, sessionId);
++    scopeRef.current = { key, ownerUserId: token, sessionId };
++    const scopedItems = readItems(key, token, sessionId);
++    itemsRef.current = scopedItems;
++    setItems(scopedItems);
++    void flush();
++  }, [flush, sessionId, token]);
++
+   useEffect(() => {
+     const handleOnline = () => {
+       setIsOnline(true);
+diff --git a/artifacts/combustivel-legal/src/pages/AdminDenuncias.tsx b/artifacts/combustivel-legal/src/pages/AdminDenuncias.tsx
+index a682b77..82583fc 100644
+--- a/artifacts/combustivel-legal/src/pages/AdminDenuncias.tsx
++++ b/artifacts/combustivel-legal/src/pages/AdminDenuncias.tsx
+@@ -10,6 +10,8 @@ const STATUS_OPTIONS: { value: DenunciaStatus; label: string }[] = [
+   { value: 'recebida', label: 'Recebida pelo ICL' },
+   { value: 'encaminhada', label: 'Encaminhada à ANP/órgão' },
+   { value: 'respondida', label: 'Respondida / concluída' },
++  { value: 'aguardando_posto', label: 'Aguardando resposta do posto' },
++  { value: 'respondida_pelo_posto', label: 'Respondida pelo posto' },
+ ];
+ 
+ export default function AdminDenunciasPage() {
+diff --git a/artifacts/combustivel-legal/src/pages/Denunciar.tsx b/artifacts/combustivel-legal/src/pages/Denunciar.tsx
+index 3d8988c..2f916bb 100644
+--- a/artifacts/combustivel-legal/src/pages/Denunciar.tsx
++++ b/artifacts/combustivel-legal/src/pages/Denunciar.tsx
+@@ -5,7 +5,12 @@ import { Button } from '@/components/ui/button';
+ import { Input } from '@/components/ui/input';
+ import { Textarea } from '@/components/ui/textarea';
+ import { Label } from '@/components/ui/label';
+-import { useListarPostos, DenunciaInputCategoria, getListarPostosQueryKey } from '@workspace/api-client-react';
++import {
++  useListarPostos,
++  DenunciaInputCategoria,
++  getListarPostosQueryKey,
++  solicitarUploadUrl,
++} from '@workspace/api-client-react';
+ import { useLocationContext } from '@/contexts/LocationContext';
+ import { useDenunciaQueue } from '@/contexts/DenunciaQueueContext';
+ import { AlertTriangle, Droplet, Hash, Copy, CheckCircle2, MapPin, Camera, X, WifiOff, Clock3 } from 'lucide-react';
+@@ -24,13 +29,54 @@ export default function DenunciarPage() {
+   const [descricao, setDescricao] = useState('');
+   const [postoSearch, setPostoSearch] = useState('');
+   const [selectedPostoId, setSelectedPostoId] = useState<string | null>(null);
+-  const [fotoNome, setFotoNome] = useState<string | null>(null);
++  const [arquivos, setArquivos] = useState<File[]>([]);
+   const [submitting, setSubmitting] = useState(false);
+   const debouncedPostoSearch = useDebouncedValue(postoSearch.trim());
+   const isPostoQueryCurrent = debouncedPostoSearch === postoSearch.trim();
+ 
+   const fileInputRef = useRef<HTMLInputElement>(null);
+ 
++  const obterLocalizacaoDaDenuncia = (): Promise<{ lat: number; lng: number; precisao_m: number } | null> =>
++    new Promise((resolve) => {
++      if (!navigator.geolocation) {
++        resolve(null);
++        return;
++      }
++      navigator.geolocation.getCurrentPosition(
++        ({ coords }) =>
++          resolve({
++            lat: coords.latitude,
++            lng: coords.longitude,
++            precisao_m: coords.accuracy,
++          }),
++        () => resolve(null),
++        { enableHighAccuracy: true, maximumAge: 0, timeout: 10_000 },
++      );
++    });
++
++  const enviarArquivos = async (selecionados: File[]) =>
++    Promise.all(
++      selecionados.map(async (arquivo) => {
++        const upload = await solicitarUploadUrl({
++          name: arquivo.name.slice(0, 255),
++          size: arquivo.size,
++          content_type: arquivo.type as 'image/jpeg' | 'image/png' | 'image/webp',
++        });
++        const resposta = await fetch(upload.upload_url, {
++          method: 'PUT',
++          headers: { 'Content-Type': arquivo.type },
++          body: arquivo,
++        });
++        if (!resposta.ok) throw new Error('Não foi possível armazenar uma das fotos.');
++        return {
++          object_path: upload.object_path,
++          mime_type: arquivo.type as 'image/jpeg' | 'image/png' | 'image/webp',
++          name: arquivo.name.slice(0, 255),
++          size_bytes: arquivo.size,
++        };
++      }),
++    );
++
+   const { data: postosNearby = [] } = useListarPostos(
+     { lat: activePosition.lat, lng: activePosition.lng, raio_km: 5, q: debouncedPostoSearch },
+     {
+@@ -47,9 +93,28 @@ export default function DenunciarPage() {
+   );
+ 
+   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+-    if (e.target.files && e.target.files.length > 0) {
+-      setFotoNome(e.target.files[0].name);
++    const selecionados = Array.from(e.target.files ?? []);
++    e.target.value = '';
++    if (selecionados.length === 0) return;
++
++    const aceitos = selecionados.filter(
++      (arquivo) =>
++        ['image/jpeg', 'image/png', 'image/webp'].includes(arquivo.type) &&
++        arquivo.size > 0 &&
++        arquivo.size <= 5 * 1024 * 1024,
++    );
++    if (aceitos.length !== selecionados.length) {
++      toast({
++        title: 'Foto não aceita',
++        description: 'Use imagens JPG, PNG ou WebP de até 5 MB cada.',
++        variant: 'destructive',
++      });
++    }
++    const disponiveis = Math.max(0, 5 - arquivos.length);
++    if (aceitos.length > disponiveis) {
++      toast({ title: 'Limite de fotos', description: 'Você pode anexar até 5 fotos.' });
+     }
++    setArquivos((atuais) => [...atuais, ...aceitos.slice(0, disponiveis)]);
+   };
+ 
+   const handleSubmit = async (e: React.FormEvent) => {
+@@ -62,14 +127,41 @@ export default function DenunciarPage() {
+     }
+     setSubmitting(true);
+     try {
++      if (arquivos.length > 0 && !navigator.onLine) {
++        toast({
++          title: 'Conecte-se para enviar as fotos',
++          description: 'A denúncia pode ser salva sem fotos e enviada quando a conexão voltar.',
++          variant: 'destructive',
++        });
++        return;
++      }
++      const [localizacao, anexos] = await Promise.all([
++        obterLocalizacaoDaDenuncia(),
++        enviarArquivos(arquivos),
++      ]);
+       const result = await sendDenuncia({
+         categoria,
+         descricao,
+         posto_id: selectedPostoId,
+-        foto_nome: fotoNome,
++        lat: localizacao?.lat ?? null,
++        lng: localizacao?.lng ?? null,
++        precisao_m: localizacao?.precisao_m ?? null,
++        anexos,
+       });
+       setDoneId(result.id);
+       setStep('done');
++      if (!localizacao) {
++        toast({
++          title: 'Denúncia registrada sem localização',
++          description: 'Não foi possível obter sua localização. Você pode continuar usando o app sem ela.',
++        });
++      }
++    } catch (error) {
++      toast({
++        title: 'Não foi possível enviar a denúncia',
++        description: error instanceof Error ? error.message : 'Tente novamente em instantes.',
++        variant: 'destructive',
++      });
+     } finally {
+       setSubmitting(false);
+     }
+@@ -79,7 +171,7 @@ export default function DenunciarPage() {
+     setStep('form');
+     setDoneId(null);
+     setDescricao('');
+-    setFotoNome(null);
++    setArquivos([]);
+     setSelectedPostoId(null);
+     setPostoSearch('');
+   };
+@@ -147,7 +239,7 @@ export default function DenunciarPage() {
+             Viu algo errado?
+           </h2>
+           <p className="text-primary-foreground/70 text-sm">
+-            Sua denúncia é anônima e nos ajuda a manter um mercado mais justo e seguro.
++            Se você estiver conectado, a denúncia será vinculada à sua conta. Sem login, ela fica associada a este aparelho.
+           </p>
+         </div>
+ 
+@@ -235,25 +327,36 @@ export default function DenunciarPage() {
+           </div>
+ 
+           <div className="space-y-2">
+-            <Label className="text-base font-bold text-slate-800">Foto <span className="text-slate-400 font-normal text-sm">(opcional)</span></Label>
++            <Label className="text-base font-bold text-slate-800">Fotos <span className="text-slate-400 font-normal text-sm">(opcional, até 5)</span></Label>
+             <input 
+               type="file" 
+-              accept="image/*" 
++              accept="image/jpeg,image/png,image/webp"
++              multiple
+               className="hidden" 
+               ref={fileInputRef}
+               onChange={handleFileChange}
+             />
+-            {fotoNome ? (
+-              <div className="bg-slate-100 p-3 rounded-xl border border-slate-200 flex justify-between items-center">
+-                <div className="truncate font-medium text-slate-700 text-sm flex items-center gap-2">
+-                  <Camera className="w-4 h-4 text-primary" />
+-                  {fotoNome}
+-                </div>
+-                <button type="button" onClick={() => setFotoNome(null)} className="text-slate-400 hover:text-slate-600">
+-                  <X className="w-4 h-4" />
+-                </button>
+-              </div>
+-            ) : (
++            {arquivos.length > 0 && (
++              <ul className="space-y-2">
++                {arquivos.map((arquivo, index) => (
++                  <li key={`${arquivo.name}-${index}`} className="bg-slate-100 p-3 rounded-xl border border-slate-200 flex justify-between items-center gap-3">
++                    <span className="truncate font-medium text-slate-700 text-sm flex items-center gap-2">
++                      <Camera className="w-4 h-4 shrink-0 text-primary" />
++                      {arquivo.name}
++                    </span>
++                    <button
++                      type="button"
++                      aria-label={`Remover ${arquivo.name}`}
++                      onClick={() => setArquivos((atuais) => atuais.filter((_, i) => i !== index))}
++                      className="text-slate-400 hover:text-slate-600"
++                    >
++                      <X className="w-4 h-4" />
++                    </button>
++                  </li>
++                ))}
++              </ul>
++            )}
++            {arquivos.length < 5 && (
+               <Button 
+                 type="button" 
+                 variant="outline" 
+@@ -261,17 +364,18 @@ export default function DenunciarPage() {
+                 onClick={() => fileInputRef.current?.click()}
+               >
+                 <Camera className="w-5 h-5 mr-2" />
+-                Anexar foto
++                Anexar fotos
+               </Button>
+             )}
++            <p className="text-xs text-slate-500">JPG, PNG ou WebP, até 5 MB por foto. As imagens são enviadas para armazenamento privado.</p>
+           </div>
+ 
+           <Button 
+             type="submit" 
+             className="w-full h-14 text-lg font-bold bg-flame-gradient hover:opacity-90 shadow-md text-white border-0 mt-2"
+-            disabled={!descricao.trim() || descricao.length < 5}
++            disabled={!descricao.trim() || descricao.length < 5 || submitting}
+           >
+-            {isOnline ? 'Enviar Denúncia' : 'Salvar denúncia offline'}
++            {submitting ? 'Enviando denúncia…' : isOnline ? 'Enviar Denúncia' : 'Salvar denúncia offline'}
+           </Button>
+         </form>
+ 
+diff --git a/lib/api-client-react/src/generated/api.schemas.ts b/lib/api-client-react/src/generated/api.schemas.ts
+index 79edb17..c00759e 100644
+--- a/lib/api-client-react/src/generated/api.schemas.ts
++++ b/lib/api-client-react/src/generated/api.schemas.ts
+@@ -246,6 +246,31 @@ export const DenunciaInputCategoria = {
+   outra: 'outra',
+ } as const;
+ 
++export type DenunciaAnexoMimeType = typeof DenunciaAnexoMimeType[keyof typeof DenunciaAnexoMimeType];
++
++
++export const DenunciaAnexoMimeType = {
++  'image/jpeg': 'image/jpeg',
++  'image/png': 'image/png',
++  'image/webp': 'image/webp',
++} as const;
++
++export interface DenunciaAnexo {
++  /** @pattern ^/objects/uploads/[0-9a-fA-F-]{36}$ */
++  object_path: string;
++  mime_type: DenunciaAnexoMimeType;
++  /**
++     * @minLength 1
++     * @maxLength 255
++     */
++  name: string;
++  /**
++     * @minimum 1
++     * @maximum 5242880
++     */
++  size_bytes: number;
++}
++
+ export interface DenunciaInput {
+   /** @nullable */
+   posto_id?: string | null;
+@@ -263,6 +288,58 @@ export interface DenunciaInput {
+      * @nullable
+      */
+   foto_nome?: string | null;
++  /**
++     * @minimum -90
++     * @maximum 90
++     * @nullable
++     */
++  lat?: number | null;
++  /**
++     * @minimum -180
++     * @maximum 180
++     * @nullable
++     */
++  lng?: number | null;
++  /**
++     * @minimum 0
++     * @nullable
++     */
++  precisao_m?: number | null;
++  /** @maxItems 5 */
++  anexos?: DenunciaAnexo[];
++}
++
++export type AnexoUploadInputContentType = typeof AnexoUploadInputContentType[keyof typeof AnexoUploadInputContentType];
++
++
++export const AnexoUploadInputContentType = {
++  'image/jpeg': 'image/jpeg',
++  'image/png': 'image/png',
++  'image/webp': 'image/webp',
++} as const;
++
++export interface AnexoUploadInput {
++  /**
++     * @minLength 1
++     * @maxLength 255
++     */
++  name: string;
++  /**
++     * @minimum 1
++     * @maximum 5242880
++     */
++  size: number;
++  content_type: AnexoUploadInputContentType;
++}
++
++export interface AnexoUploadUrl {
++  upload_url: string;
++  object_path: string;
++}
++
++export interface RetiradaDenunciaInput {
++  /** @maxLength 500 */
++  motivo?: string;
+ }
+ 
+ export interface DenunciaResposta {
+@@ -278,6 +355,9 @@ export const DenunciaStatus = {
+   recebida: 'recebida',
+   encaminhada: 'encaminhada',
+   respondida: 'respondida',
++  aguardando_posto: 'aguardando_posto',
++  respondida_pelo_posto: 'respondida_pelo_posto',
++  retirada: 'retirada',
+ } as const;
+ 
+ export interface Andamento {
+@@ -315,6 +395,7 @@ export interface DenunciaAcompanhamento {
+   descricao: string;
+   status: DenunciaStatus;
+   criado_em: string;
++  anexos: DenunciaAnexo[];
+   andamentos: Andamento[];
+ }
+ 
+diff --git a/lib/api-client-react/src/generated/api.ts b/lib/api-client-react/src/generated/api.ts
+index 003beb5..c271dc2 100644
+--- a/lib/api-client-react/src/generated/api.ts
++++ b/lib/api-client-react/src/generated/api.ts
+@@ -21,6 +21,8 @@ import type {
+ 
+ import type {
+   AndamentoInput,
++  AnexoUploadInput,
++  AnexoUploadUrl,
+   BuscarEnderecoParams,
+   Carteira,
+   CheckinInput,
+@@ -46,6 +48,7 @@ import type {
+   Recompensa,
+   Resgate,
+   ResgateInput,
++  RetiradaDenunciaInput,
+   Rota,
+   RotaInput,
+   Sessao,
+@@ -1137,6 +1140,149 @@ export function useListarMinhasDenuncias<TData = Awaited<ReturnType<typeof lista
+ 
+ 
+ 
++export const getRetirarDenunciaUrl = (id: string,) => {
++
++
++
++
++  return `/api/denuncias/${id}/retirada`
++}
++
++/**
++ * @summary Retira uma denúncia pertencente ao usuário ou à sessão anônima
++ */
++export const retirarDenuncia = async (id: string,
++    retiradaDenunciaInput?: RetiradaDenunciaInput, options?: Parameters<typeof customFetch>[1]): Promise<DenunciaAcompanhamento> => {
++
++  return customFetch<DenunciaAcompanhamento>(getRetirarDenunciaUrl(id),
++  {
++    ...options,
++    method: 'POST',
++    headers: { 'Content-Type': 'application/json', ...options?.headers },
++    body: JSON.stringify(retiradaDenunciaInput)
++  }
++);}
++
++
++
++
++
++export const getRetirarDenunciaMutationOptions = <TError = ErrorType<Erro>,
++    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof retirarDenuncia>>, TError,{id: string;data?: BodyType<RetiradaDenunciaInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
++): UseMutationOptions<Awaited<ReturnType<typeof retirarDenuncia>>, TError,{id: string;data?: BodyType<RetiradaDenunciaInput>}, TContext> => {
++
++const mutationKey = ['retirarDenuncia'];
++const {mutation: mutationOptions, request: requestOptions} = options ?
++      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
++      options
++      : {...options, mutation: {...options.mutation, mutationKey}}
++      : {mutation: { mutationKey, }, request: undefined};
++
++
++
++
++      const mutationFn: MutationFunction<Awaited<ReturnType<typeof retirarDenuncia>>, {id: string;data?: BodyType<RetiradaDenunciaInput>}> = (props) => {
++          const {id,data} = props ?? {};
++
++          return  retirarDenuncia(id,data,requestOptions)
++        }
++
++
++
++
++
++
++  return  { mutationFn, ...mutationOptions }}
++
++    export type RetirarDenunciaMutationResult = NonNullable<Awaited<ReturnType<typeof retirarDenuncia>>>
++    export type RetirarDenunciaMutationBody = BodyType<RetiradaDenunciaInput> | undefined
++    export type RetirarDenunciaMutationError = ErrorType<Erro>
++
++    /**
++ * @summary Retira uma denúncia pertencente ao usuário ou à sessão anônima
++ */
++export const useRetirarDenuncia = <TError = ErrorType<Erro>,
++    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof retirarDenuncia>>, TError,{id: string;data?: BodyType<RetiradaDenunciaInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
++ ): UseMutationResult<
++        Awaited<ReturnType<typeof retirarDenuncia>>,
++        TError,
++        {id: string;data?: BodyType<RetiradaDenunciaInput>},
++        TContext
++      > => {
++      return useMutation(getRetirarDenunciaMutationOptions(options));
++    }
++
++export const getSolicitarUploadUrlUrl = () => {
++
++
++
++
++  return `/api/storage/uploads/request-url`
++}
++
++/**
++ * @summary Solicita URL temporária para enviar foto privada de denúncia
++ */
++export const solicitarUploadUrl = async (anexoUploadInput: AnexoUploadInput, options?: Parameters<typeof customFetch>[1]): Promise<AnexoUploadUrl> => {
++
++  return customFetch<AnexoUploadUrl>(getSolicitarUploadUrlUrl(),
++  {
++    ...options,
++    method: 'POST',
++    headers: { 'Content-Type': 'application/json', ...options?.headers },
++    body: JSON.stringify(anexoUploadInput)
++  }
++);}
++
++
++
++
++
++export const getSolicitarUploadUrlMutationOptions = <TError = ErrorType<Erro>,
++    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof solicitarUploadUrl>>, TError,{data: BodyType<AnexoUploadInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
++): UseMutationOptions<Awaited<ReturnType<typeof solicitarUploadUrl>>, TError,{data: BodyType<AnexoUploadInput>}, TContext> => {
++
++const mutationKey = ['solicitarUploadUrl'];
++const {mutation: mutationOptions, request: requestOptions} = options ?
++      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
++      options
++      : {...options, mutation: {...options.mutation, mutationKey}}
++      : {mutation: { mutationKey, }, request: undefined};
++
++
++
++
++      const mutationFn: MutationFunction<Awaited<ReturnType<typeof solicitarUploadUrl>>, {data: BodyType<AnexoUploadInput>}> = (props) => {
++          const {data} = props ?? {};
++
++          return  solicitarUploadUrl(data,requestOptions)
++        }
++
++
++
++
++
++
++  return  { mutationFn, ...mutationOptions }}
++
++    export type SolicitarUploadUrlMutationResult = NonNullable<Awaited<ReturnType<typeof solicitarUploadUrl>>>
++    export type SolicitarUploadUrlMutationBody = BodyType<AnexoUploadInput>
++    export type SolicitarUploadUrlMutationError = ErrorType<Erro>
++
++    /**
++ * @summary Solicita URL temporária para enviar foto privada de denúncia
++ */
++export const useSolicitarUploadUrl = <TError = ErrorType<Erro>,
++    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof solicitarUploadUrl>>, TError,{data: BodyType<AnexoUploadInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
++ ): UseMutationResult<
++        Awaited<ReturnType<typeof solicitarUploadUrl>>,
++        TError,
++        {data: BodyType<AnexoUploadInput>},
++        TContext
++      > => {
++      return useMutation(getSolicitarUploadUrlMutationOptions(options));
++    }
++
+ export const getObterDashboardUrl = () => {
+ 
+ 
+diff --git a/lib/api-spec/openapi.yaml b/lib/api-spec/openapi.yaml
+index 466f4fe..0a6bee1 100644
+--- a/lib/api-spec/openapi.yaml
++++ b/lib/api-spec/openapi.yaml
+@@ -354,6 +354,71 @@ paths:
+                 type: array
+                 items:
+                   $ref: "#/components/schemas/DenunciaAcompanhamento"
++  /denuncias/{id}/retirada:
++    post:
++      operationId: retirarDenuncia
++      tags: [denuncias]
++      summary: Retira uma denúncia pertencente ao usuário ou à sessão anônima
++      parameters:
++        - name: id
++          in: path
++          required: true
++          schema: { type: string, format: uuid }
++      requestBody:
++        required: false
++        content:
++          application/json:
++            schema:
++              $ref: "#/components/schemas/RetiradaDenunciaInput"
++      responses:
++        "200":
++          description: Denúncia retirada e andamento registrado
++          content:
++            application/json:
++              schema:
++                $ref: "#/components/schemas/DenunciaAcompanhamento"
++        "404":
++          description: Denúncia não encontrada para esta conta ou sessão
++          content:
++            application/json:
++              schema:
++                $ref: "#/components/schemas/Erro"
++        "409":
++          description: Denúncia já retirada
++          content:
++            application/json:
++              schema:
++                $ref: "#/components/schemas/Erro"
++  /storage/uploads/request-url:
++    post:
++      operationId: solicitarUploadUrl
++      tags: [denuncias]
++      summary: Solicita URL temporária para enviar foto privada de denúncia
++      requestBody:
++        required: true
++        content:
++          application/json:
++            schema:
++              $ref: "#/components/schemas/AnexoUploadInput"
++      responses:
++        "200":
++          description: URL temporária e caminho do objeto
++          content:
++            application/json:
++              schema:
++                $ref: "#/components/schemas/AnexoUploadUrl"
++        "400":
++          description: Arquivo não permitido
++          content:
++            application/json:
++              schema:
++                $ref: "#/components/schemas/Erro"
++        "401":
++          description: Sessão ausente
++          content:
++            application/json:
++              schema:
++                $ref: "#/components/schemas/Erro"
+   /apresentacao/dashboard:
+     get:
+       operationId: obterDashboard
+@@ -755,6 +820,39 @@ components:
+         foto_nome:
+           type: ["string", "null"]
+           description: Nome do arquivo anexado (opcional, apenas referência no protótipo)
++        lat: { type: ["number", "null"], minimum: -90, maximum: 90 }
++        lng: { type: ["number", "null"], minimum: -180, maximum: 180 }
++        precisao_m: { type: ["number", "null"], minimum: 0 }
++        anexos:
++          type: array
++          maxItems: 5
++          items:
++            $ref: "#/components/schemas/DenunciaAnexo"
++    DenunciaAnexo:
++      type: object
++      required: [object_path, mime_type, name, size_bytes]
++      properties:
++        object_path: { type: string, pattern: "^/objects/uploads/[0-9a-fA-F-]{36}$" }
++        mime_type: { type: string, enum: [image/jpeg, image/png, image/webp] }
++        name: { type: string, minLength: 1, maxLength: 255 }
++        size_bytes: { type: integer, minimum: 1, maximum: 5242880 }
++    AnexoUploadInput:
++      type: object
++      required: [name, size, content_type]
++      properties:
++        name: { type: string, minLength: 1, maxLength: 255 }
++        size: { type: integer, minimum: 1, maximum: 5242880 }
++        content_type: { type: string, enum: [image/jpeg, image/png, image/webp] }
++    AnexoUploadUrl:
++      type: object
++      required: [upload_url, object_path]
++      properties:
++        upload_url: { type: string, format: uri }
++        object_path: { type: string }
++    RetiradaDenunciaInput:
++      type: object
++      properties:
++        motivo: { type: string, maxLength: 500 }
+     DenunciaResposta:
+       type: object
+       required: [id, protocolo, criado_em]
+@@ -764,7 +862,7 @@ components:
+         criado_em: { type: string }
+     DenunciaStatus:
+       type: string
+-      enum: [recebida, encaminhada, respondida]
++      enum: [recebida, encaminhada, respondida, aguardando_posto, respondida_pelo_posto, retirada]
+     Andamento:
+       type: object
+       required: [id, status, mensagem, criado_em]
+@@ -783,7 +881,7 @@ components:
+         mensagem: { type: string, minLength: 1, maxLength: 1000 }
+     DenunciaAcompanhamento:
+       type: object
+-      required: [id, protocolo, categoria, descricao, status, criado_em, andamentos]
++      required: [id, protocolo, categoria, descricao, status, criado_em, andamentos, anexos]
+       properties:
+         id: { type: string }
+         client_id: { type: ["string", "null"] }
+@@ -795,6 +893,10 @@ components:
+         descricao: { type: string }
+         status: { $ref: "#/components/schemas/DenunciaStatus" }
+         criado_em: { type: string }
++        anexos:
++          type: array
++          items:
++            $ref: "#/components/schemas/DenunciaAnexo"
+         andamentos:
+           type: array
+           items:
+diff --git a/lib/api-zod/src/generated/api.ts b/lib/api-zod/src/generated/api.ts
+index 42f8bf2..692cf29 100644
+--- a/lib/api-zod/src/generated/api.ts
++++ b/lib/api-zod/src/generated/api.ts
+@@ -301,6 +301,21 @@ export const criarDenunciaBodyDescricaoMin = 5;
+ 
+ export const criarDenunciaBodyClientIdMax = 64;
+ 
++export const criarDenunciaBodyLatMin = -90;
++export const criarDenunciaBodyLatMax = 90;
++
++export const criarDenunciaBodyLngMin = -180;
++export const criarDenunciaBodyLngMax = 180;
++
++export const criarDenunciaBodyPrecisaoMMin = 0;
++
++export const criarDenunciaBodyAnexosItemObjectPathRegExp = new RegExp('^/objects/uploads/[0-9a-fA-F-]{36}$');
++export const criarDenunciaBodyAnexosItemNameMax = 255;
++
++export const criarDenunciaBodyAnexosItemSizeBytesMax = 5242880;
++
++export const criarDenunciaBodyAnexosMax = 5;
++
+ 
+ 
+ export const CriarDenunciaBody = zod.object({
+@@ -308,7 +323,16 @@ export const CriarDenunciaBody = zod.object({
+   "categoria": zod.enum(['qualidade_combustivel', 'volume_bomba', 'posto_clone', 'outra']),
+   "descricao": zod.string().min(criarDenunciaBodyDescricaoMin),
+   "client_id": zod.string().max(criarDenunciaBodyClientIdMax).nullish().describe('Identificador gerado no aparelho; evita duplicar a denúncia em reenvios'),
+-  "foto_nome": zod.string().nullish().describe('Nome do arquivo anexado (opcional, apenas referência no protótipo)')
++  "foto_nome": zod.string().nullish().describe('Nome do arquivo anexado (opcional, apenas referência no protótipo)'),
++  "lat": zod.number().min(criarDenunciaBodyLatMin).max(criarDenunciaBodyLatMax).nullish(),
++  "lng": zod.number().min(criarDenunciaBodyLngMin).max(criarDenunciaBodyLngMax).nullish(),
++  "precisao_m": zod.number().min(criarDenunciaBodyPrecisaoMMin).nullish(),
++  "anexos": zod.array(zod.object({
++  "object_path": zod.string().regex(criarDenunciaBodyAnexosItemObjectPathRegExp),
++  "mime_type": zod.enum(['image/jpeg', 'image/png', 'image/webp']),
++  "name": zod.string().min(1).max(criarDenunciaBodyAnexosItemNameMax),
++  "size_bytes": zod.int().min(1).max(criarDenunciaBodyAnexosItemSizeBytesMax)
++})).max(criarDenunciaBodyAnexosMax).optional()
+ })
+ 
+ export const CriarDenunciaResponse = zod.object({
+@@ -321,6 +345,13 @@ export const CriarDenunciaResponse = zod.object({
+ /**
+  * @summary Lista as denúncias feitas pelo aparelho (identificação anônima x-session-id)
+  */
++export const listarMinhasDenunciasResponseAnexosItemObjectPathRegExp = new RegExp('^/objects/uploads/[0-9a-fA-F-]{36}$');
++export const listarMinhasDenunciasResponseAnexosItemNameMax = 255;
++
++export const listarMinhasDenunciasResponseAnexosItemSizeBytesMax = 5242880;
++
++
++
+ export const ListarMinhasDenunciasResponseItem = zod.object({
+   "id": zod.string(),
+   "client_id": zod.string().nullish(),
+@@ -330,11 +361,17 @@ export const ListarMinhasDenunciasResponseItem = zod.object({
+   "posto_nome": zod.string().nullish(),
+   "municipio": zod.string().nullish(),
+   "descricao": zod.string(),
+-  "status": zod.enum(['recebida', 'encaminhada', 'respondida']),
++  "status": zod.enum(['recebida', 'encaminhada', 'respondida', 'aguardando_posto', 'respondida_pelo_posto', 'retirada']),
+   "criado_em": zod.string(),
++  "anexos": zod.array(zod.object({
++  "object_path": zod.string().regex(listarMinhasDenunciasResponseAnexosItemObjectPathRegExp),
++  "mime_type": zod.enum(['image/jpeg', 'image/png', 'image/webp']),
++  "name": zod.string().min(1).max(listarMinhasDenunciasResponseAnexosItemNameMax),
++  "size_bytes": zod.int().min(1).max(listarMinhasDenunciasResponseAnexosItemSizeBytesMax)
++})),
+   "andamentos": zod.array(zod.object({
+   "id": zod.string(),
+-  "status": zod.enum(['recebida', 'encaminhada', 'respondida']),
++  "status": zod.enum(['recebida', 'encaminhada', 'respondida', 'aguardando_posto', 'respondida_pelo_posto', 'retirada']),
+   "orgao": zod.string().nullish(),
+   "mensagem": zod.string(),
+   "criado_em": zod.string()
+@@ -343,6 +380,76 @@ export const ListarMinhasDenunciasResponseItem = zod.object({
+ export const ListarMinhasDenunciasResponse = zod.array(ListarMinhasDenunciasResponseItem)
+ 
+ 
++/**
++ * @summary Retira uma denúncia pertencente ao usuário ou à sessão anônima
++ */
++export const RetirarDenunciaParams = zod.object({
++  "id": zod.uuid()
++})
++
++export const retirarDenunciaBodyMotivoMax = 500;
++
++
++
++export const RetirarDenunciaBody = zod.object({
++  "motivo": zod.string().max(retirarDenunciaBodyMotivoMax).optional()
++})
++
++export const retirarDenunciaResponseAnexosItemObjectPathRegExp = new RegExp('^/objects/uploads/[0-9a-fA-F-]{36}$');
++export const retirarDenunciaResponseAnexosItemNameMax = 255;
++
++export const retirarDenunciaResponseAnexosItemSizeBytesMax = 5242880;
++
++
++
++export const RetirarDenunciaResponse = zod.object({
++  "id": zod.string(),
++  "client_id": zod.string().nullish(),
++  "protocolo": zod.string(),
++  "categoria": zod.string(),
++  "posto_id": zod.string().nullish(),
++  "posto_nome": zod.string().nullish(),
++  "municipio": zod.string().nullish(),
++  "descricao": zod.string(),
++  "status": zod.enum(['recebida', 'encaminhada', 'respondida', 'aguardando_posto', 'respondida_pelo_posto', 'retirada']),
++  "criado_em": zod.string(),
++  "anexos": zod.array(zod.object({
++  "object_path": zod.string().regex(retirarDenunciaResponseAnexosItemObjectPathRegExp),
++  "mime_type": zod.enum(['image/jpeg', 'image/png', 'image/webp']),
++  "name": zod.string().min(1).max(retirarDenunciaResponseAnexosItemNameMax),
++  "size_bytes": zod.int().min(1).max(retirarDenunciaResponseAnexosItemSizeBytesMax)
++})),
++  "andamentos": zod.array(zod.object({
++  "id": zod.string(),
++  "status": zod.enum(['recebida', 'encaminhada', 'respondida', 'aguardando_posto', 'respondida_pelo_posto', 'retirada']),
++  "orgao": zod.string().nullish(),
++  "mensagem": zod.string(),
++  "criado_em": zod.string()
++}))
++})
++
++
++/**
++ * @summary Solicita URL temporária para enviar foto privada de denúncia
++ */
++export const solicitarUploadUrlBodyNameMax = 255;
++
++export const solicitarUploadUrlBodySizeMax = 5242880;
++
++
++
++export const SolicitarUploadUrlBody = zod.object({
++  "name": zod.string().min(1).max(solicitarUploadUrlBodyNameMax),
++  "size": zod.int().min(1).max(solicitarUploadUrlBodySizeMax),
++  "content_type": zod.enum(['image/jpeg', 'image/png', 'image/webp'])
++})
++
++export const SolicitarUploadUrlResponse = zod.object({
++  "upload_url": zod.url(),
++  "object_path": zod.string()
++})
++
++
+ /**
+  * @summary Métricas ao vivo do Dashboard da Associada (Distribuidora Horizonte)
+  */
+@@ -431,11 +538,18 @@ export const registrarAndamentoDenunciaBodyMensagemMax = 1000;
+ 
+ 
+ export const RegistrarAndamentoDenunciaBody = zod.object({
+-  "status": zod.enum(['recebida', 'encaminhada', 'respondida']),
++  "status": zod.enum(['recebida', 'encaminhada', 'respondida', 'aguardando_posto', 'respondida_pelo_posto', 'retirada']),
+   "orgao": zod.string().nullish(),
+   "mensagem": zod.string().min(1).max(registrarAndamentoDenunciaBodyMensagemMax)
+ })
+ 
++export const registrarAndamentoDenunciaResponseAnexosItemObjectPathRegExp = new RegExp('^/objects/uploads/[0-9a-fA-F-]{36}$');
++export const registrarAndamentoDenunciaResponseAnexosItemNameMax = 255;
++
++export const registrarAndamentoDenunciaResponseAnexosItemSizeBytesMax = 5242880;
++
++
++
+ export const RegistrarAndamentoDenunciaResponse = zod.object({
+   "id": zod.string(),
+   "client_id": zod.string().nullish(),
+@@ -445,11 +559,17 @@ export const RegistrarAndamentoDenunciaResponse = zod.object({
+   "posto_nome": zod.string().nullish(),
+   "municipio": zod.string().nullish(),
+   "descricao": zod.string(),
+-  "status": zod.enum(['recebida', 'encaminhada', 'respondida']),
++  "status": zod.enum(['recebida', 'encaminhada', 'respondida', 'aguardando_posto', 'respondida_pelo_posto', 'retirada']),
+   "criado_em": zod.string(),
++  "anexos": zod.array(zod.object({
++  "object_path": zod.string().regex(registrarAndamentoDenunciaResponseAnexosItemObjectPathRegExp),
++  "mime_type": zod.enum(['image/jpeg', 'image/png', 'image/webp']),
++  "name": zod.string().min(1).max(registrarAndamentoDenunciaResponseAnexosItemNameMax),
++  "size_bytes": zod.int().min(1).max(registrarAndamentoDenunciaResponseAnexosItemSizeBytesMax)
++})),
+   "andamentos": zod.array(zod.object({
+   "id": zod.string(),
+-  "status": zod.enum(['recebida', 'encaminhada', 'respondida']),
++  "status": zod.enum(['recebida', 'encaminhada', 'respondida', 'aguardando_posto', 'respondida_pelo_posto', 'retirada']),
+   "orgao": zod.string().nullish(),
+   "mensagem": zod.string(),
+   "criado_em": zod.string()
+diff --git a/lib/api-zod/src/generated/types/anexoUploadInput.ts b/lib/api-zod/src/generated/types/anexoUploadInput.ts
+new file mode 100644
+index 0000000..141e03e
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/anexoUploadInput.ts
+@@ -0,0 +1,22 @@
++/**
++ * Generated by orval v8.23.0 🍺
++ * Do not edit manually.
++ * Api
++ * API do Aplicativo do Combustível Legal (ICL) — protótipo Fase 1
++ * OpenAPI spec version: 0.1.0
++ */
++import type { AnexoUploadInputContentType } from './anexoUploadInputContentType';
++
++export interface AnexoUploadInput {
++  /**
++     * @minLength 1
++     * @maxLength 255
++     */
++  name: string;
++  /**
++     * @minimum 1
++     * @maximum 5242880
++     */
++  size: number;
++  content_type: AnexoUploadInputContentType;
++}
+diff --git a/lib/api-zod/src/generated/types/anexoUploadInputContentType.ts b/lib/api-zod/src/generated/types/anexoUploadInputContentType.ts
+new file mode 100644
+index 0000000..537e4dd
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/anexoUploadInputContentType.ts
+@@ -0,0 +1,16 @@
++/**
++ * Generated by orval v8.23.0 🍺
++ * Do not edit manually.
++ * Api
++ * API do Aplicativo do Combustível Legal (ICL) — protótipo Fase 1
++ * OpenAPI spec version: 0.1.0
++ */
++
++export type AnexoUploadInputContentType = typeof AnexoUploadInputContentType[keyof typeof AnexoUploadInputContentType];
++
++
++export const AnexoUploadInputContentType = {
++  'image/jpeg': 'image/jpeg',
++  'image/png': 'image/png',
++  'image/webp': 'image/webp',
++} as const;
+diff --git a/lib/api-zod/src/generated/types/anexoUploadUrl.ts b/lib/api-zod/src/generated/types/anexoUploadUrl.ts
+new file mode 100644
+index 0000000..31dcb8d
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/anexoUploadUrl.ts
+@@ -0,0 +1,12 @@
++/**
++ * Generated by orval v8.23.0 🍺
++ * Do not edit manually.
++ * Api
++ * API do Aplicativo do Combustível Legal (ICL) — protótipo Fase 1
++ * OpenAPI spec version: 0.1.0
++ */
++
++export interface AnexoUploadUrl {
++  upload_url: string;
++  object_path: string;
++}
+diff --git a/lib/api-zod/src/generated/types/denunciaAcompanhamento.ts b/lib/api-zod/src/generated/types/denunciaAcompanhamento.ts
+index fd712dc..33b553a 100644
+--- a/lib/api-zod/src/generated/types/denunciaAcompanhamento.ts
++++ b/lib/api-zod/src/generated/types/denunciaAcompanhamento.ts
+@@ -6,6 +6,7 @@
+  * OpenAPI spec version: 0.1.0
+  */
+ import type { Andamento } from './andamento';
++import type { DenunciaAnexo } from './denunciaAnexo';
+ import type { DenunciaStatus } from './denunciaStatus';
+ 
+ export interface DenunciaAcompanhamento {
+@@ -23,5 +24,6 @@ export interface DenunciaAcompanhamento {
+   descricao: string;
+   status: DenunciaStatus;
+   criado_em: string;
++  anexos: DenunciaAnexo[];
+   andamentos: Andamento[];
+ }
+diff --git a/lib/api-zod/src/generated/types/denunciaAnexo.ts b/lib/api-zod/src/generated/types/denunciaAnexo.ts
+new file mode 100644
+index 0000000..4bccc17
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/denunciaAnexo.ts
+@@ -0,0 +1,24 @@
++/**
++ * Generated by orval v8.23.0 🍺
++ * Do not edit manually.
++ * Api
++ * API do Aplicativo do Combustível Legal (ICL) — protótipo Fase 1
++ * OpenAPI spec version: 0.1.0
++ */
++import type { DenunciaAnexoMimeType } from './denunciaAnexoMimeType';
++
++export interface DenunciaAnexo {
++  /** @pattern ^/objects/uploads/[0-9a-fA-F-]{36}$ */
++  object_path: string;
++  mime_type: DenunciaAnexoMimeType;
++  /**
++     * @minLength 1
++     * @maxLength 255
++     */
++  name: string;
++  /**
++     * @minimum 1
++     * @maximum 5242880
++     */
++  size_bytes: number;
++}
+diff --git a/lib/api-zod/src/generated/types/denunciaAnexoMimeType.ts b/lib/api-zod/src/generated/types/denunciaAnexoMimeType.ts
+new file mode 100644
+index 0000000..815eaf1
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/denunciaAnexoMimeType.ts
+@@ -0,0 +1,16 @@
++/**
++ * Generated by orval v8.23.0 🍺
++ * Do not edit manually.
++ * Api
++ * API do Aplicativo do Combustível Legal (ICL) — protótipo Fase 1
++ * OpenAPI spec version: 0.1.0
++ */
++
++export type DenunciaAnexoMimeType = typeof DenunciaAnexoMimeType[keyof typeof DenunciaAnexoMimeType];
++
++
++export const DenunciaAnexoMimeType = {
++  'image/jpeg': 'image/jpeg',
++  'image/png': 'image/png',
++  'image/webp': 'image/webp',
++} as const;
+diff --git a/lib/api-zod/src/generated/types/denunciaInput.ts b/lib/api-zod/src/generated/types/denunciaInput.ts
+index 391e0ce..b3ae7ea 100644
+--- a/lib/api-zod/src/generated/types/denunciaInput.ts
++++ b/lib/api-zod/src/generated/types/denunciaInput.ts
+@@ -5,6 +5,7 @@
+  * API do Aplicativo do Combustível Legal (ICL) — protótipo Fase 1
+  * OpenAPI spec version: 0.1.0
+  */
++import type { DenunciaAnexo } from './denunciaAnexo';
+ import type { DenunciaInputCategoria } from './denunciaInputCategoria';
+ 
+ export interface DenunciaInput {
+@@ -24,4 +25,23 @@ export interface DenunciaInput {
+      * @nullable
+      */
+   foto_nome?: string | null;
++  /**
++     * @minimum -90
++     * @maximum 90
++     * @nullable
++     */
++  lat?: number | null;
++  /**
++     * @minimum -180
++     * @maximum 180
++     * @nullable
++     */
++  lng?: number | null;
++  /**
++     * @minimum 0
++     * @nullable
++     */
++  precisao_m?: number | null;
++  /** @maxItems 5 */
++  anexos?: DenunciaAnexo[];
+ }
+diff --git a/lib/api-zod/src/generated/types/denunciaStatus.ts b/lib/api-zod/src/generated/types/denunciaStatus.ts
+index 917380c..6b70550 100644
+--- a/lib/api-zod/src/generated/types/denunciaStatus.ts
++++ b/lib/api-zod/src/generated/types/denunciaStatus.ts
+@@ -13,4 +13,7 @@ export const DenunciaStatus = {
+   recebida: 'recebida',
+   encaminhada: 'encaminhada',
+   respondida: 'respondida',
++  aguardando_posto: 'aguardando_posto',
++  respondida_pelo_posto: 'respondida_pelo_posto',
++  retirada: 'retirada',
+ } as const;
+diff --git a/lib/api-zod/src/generated/types/index.ts b/lib/api-zod/src/generated/types/index.ts
+index fef7ba9..5239879 100644
+--- a/lib/api-zod/src/generated/types/index.ts
++++ b/lib/api-zod/src/generated/types/index.ts
+@@ -8,6 +8,9 @@
+ 
+ export * from './andamento';
+ export * from './andamentoInput';
++export * from './anexoUploadInput';
++export * from './anexoUploadInputContentType';
++export * from './anexoUploadUrl';
+ export * from './buscarEnderecoParams';
+ export * from './carteira';
+ export * from './checkinInput';
+@@ -17,6 +20,8 @@ export * from './demoEventosInput';
+ export * from './demoEventosResultado';
+ export * from './demoResultado';
+ export * from './denunciaAcompanhamento';
++export * from './denunciaAnexo';
++export * from './denunciaAnexoMimeType';
+ export * from './denunciaInput';
+ export * from './denunciaInputCategoria';
+ export * from './denunciaResposta';
+@@ -41,6 +46,7 @@ export * from './recompensa';
+ export * from './resgate';
+ export * from './resgateInput';
+ export * from './resgateStatus';
++export * from './retiradaDenunciaInput';
+ export * from './rota';
+ export * from './rotaInput';
+ export * from './seloCriterios';
+diff --git a/lib/api-zod/src/generated/types/retiradaDenunciaInput.ts b/lib/api-zod/src/generated/types/retiradaDenunciaInput.ts
+new file mode 100644
+index 0000000..d9928db
+--- /dev/null
++++ b/lib/api-zod/src/generated/types/retiradaDenunciaInput.ts
+@@ -0,0 +1,12 @@
++/**
++ * Generated by orval v8.23.0 🍺
++ * Do not edit manually.
++ * Api
++ * API do Aplicativo do Combustível Legal (ICL) — protótipo Fase 1
++ * OpenAPI spec version: 0.1.0
++ */
++
++export interface RetiradaDenunciaInput {
++  /** @maxLength 500 */
++  motivo?: string;
++}
+diff --git a/lib/db/src/schema/index.ts b/lib/db/src/schema/index.ts
+index 924e4d8..0bdd941 100644
+--- a/lib/db/src/schema/index.ts
++++ b/lib/db/src/schema/index.ts
+@@ -344,8 +344,15 @@ export const resgates = appSchema.table(
+ );
+ 
+ // ---------------------------------------------------------------------------
+-// app.denuncias — denúncias anônimas (foto apenas como nome de arquivo)
++// app.denuncias — denúncias de usuários autenticados ou sessões anônimas
+ // ---------------------------------------------------------------------------
++export type DenunciaAnexo = {
++  object_path: string;
++  mime_type: string;
++  name: string;
++  size_bytes: number;
++};
++
+ export const denuncias = appSchema.table(
+   "denuncias",
+   {
+@@ -356,9 +363,16 @@ export const denuncias = appSchema.table(
+     municipio: text("municipio"),
+     descricao: text("descricao").notNull(),
+     fotoNome: text("foto_nome"),
++    fotoUrl: text("foto_url"),
++    fotoTipo: text("foto_tipo"),
++    anexos: jsonb("anexos").$type<DenunciaAnexo[]>().notNull().default([]),
+     status: text("status").notNull().default("recebida"),
++    userId: uuid("user_id").references(() => usuarios.id, { onDelete: "set null" }),
+     sessionId: text("session_id"),
+     clientId: text("client_id"),
++    lat: doublePrecision("lat"),
++    lng: doublePrecision("lng"),
++    precisaoM: doublePrecision("precisao_m"),
+     criadoEm: timestamp("criado_em", { withTimezone: true }).notNull().defaultNow(),
+   },
+   (t) => [
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 09f3dde..29e10a6 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -173,6 +173,9 @@ importers:
+ 
+   artifacts/api-server:
+     dependencies:
++      '@google-cloud/storage':
++        specifier: ^8.4.0
++        version: 8.4.0
+       '@workspace/api-zod':
+         specifier: workspace:*
+         version: link:../../lib/api-zod
+@@ -191,6 +194,9 @@ importers:
+       express:
+         specifier: ^5.2.1
+         version: 5.2.1
++      google-auth-library:
++        specifier: ^11.3.0
++        version: 11.3.0
+       pino:
+         specifier: ^9.14.0
+         version: 9.14.0
+@@ -802,6 +808,22 @@ packages:
+   '@gerrit0/mini-shiki@3.23.0':
+     resolution: {integrity: sha512-bEMORlG0cqdjVyCEuU0cDQbORWX+kYCeo0kV1lbxF5bt4r7SID2l9bqsxJEM0zndaxpOUT7riCyIVEuqq/Ynxg==}
+ 
++  '@google-cloud/paginator@7.2.0':
++    resolution: {integrity: sha512-l+x6YObHGTuqBCMvC0SXo3Cnyqg4FkWWKYRptf46PACHJ5GAUuhsd2b3wphgGrg1ybs/LAb+q5MnUTuG/3+v7w==}
++    engines: {node: '>=22'}
++
++  '@google-cloud/projectify@6.2.0':
++    resolution: {integrity: sha512-QXBPu/D+1zgJ9Ydw+GXYws9OipW62nxfwsGl7x3JUTDim9NCGb7R+h7Sj3HKo1WMYb/StvOYyUBZrqU2pkhuiw==}
++    engines: {node: '>=22'}
++
++  '@google-cloud/promisify@6.2.0':
++    resolution: {integrity: sha512-0i3JkkwAdGGk6AlMnFm1Vf+XtpIL73ki/MZWvXDPoN37nABf/9LFHtYeo8tW77vHSQS00ykC2ygHnUL1gkYAXg==}
++    engines: {node: '>=22'}
++
++  '@google-cloud/storage@8.4.0':
++    resolution: {integrity: sha512-M3kA6UA2Tjp5aznCrgKcm9CzOjiQyRMnquqalqXAeS5wvkqqZxN8wpNjjHafOSYs6lQ82U7f2i8we4eTfIrpkA==}
++    engines: {node: '>=22'}
++
+   '@hookform/resolvers@3.10.0':
+     resolution: {integrity: sha512-79Dv+3mDF7i+2ajj7SkypSKHhl1cbln1OGavqrsF7p6mbUv11xpqpacPsGDCTRvCSjEEIez2ef1NveSVL3b0Ag==}
+     peerDependencies:
+@@ -823,6 +845,9 @@ packages:
+   '@jridgewell/trace-mapping@0.3.31':
+     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+ 
++  '@nodable/entities@3.1.0':
++    resolution: {integrity: sha512-LsS/DjHr+uDM647Gru/cA8+J3a3HfhttwCKLyuoyN7yXTFCxKBtSgMQBvrW9yNPa2/zDRUNuGPaH5QUFoa4arQ==}
++
+   '@nodelib/fs.scandir@2.1.5':
+     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
+     engines: {node: '>= 8'}
+@@ -1736,6 +1761,10 @@ packages:
+     peerDependencies:
+       vite: ^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0
+ 
++  abort-controller@3.0.0:
++    resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
++    engines: {node: '>=6.5'}
++
+   accepts@2.0.0:
+     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
+     engines: {node: '>= 0.6'}
+@@ -1745,6 +1774,10 @@ packages:
+     engines: {node: '>=0.4.0'}
+     hasBin: true
+ 
++  agent-base@7.1.4:
++    resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
++    engines: {node: '>= 14'}
++
+   ajv-draft-04@1.0.0:
+     resolution: {integrity: sha512-mv00Te6nmYbRp5DCwclxtt7yV/joXJPGS7nM+97GdxvuttCOfgI3K4U25zboyeX0O+myI8ERluxQe5wljMmVIw==}
+     peerDependencies:
+@@ -1759,6 +1792,9 @@ packages:
+   ajv@8.20.0:
+     resolution: {integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==}
+ 
++  anynum@1.0.1:
++    resolution: {integrity: sha512-N6//FLET/tXYNM/F6ABca1oH6fWB+KlTt909Le28WMDBk8oaT4vY17DCrwg2MvmuqUKt3Ni4N5dGJ/EoBgcO6A==}
++
+   argparse@2.0.1:
+     resolution: {integrity: sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==}
+ 
+@@ -1766,6 +1802,9 @@ packages:
+     resolution: {integrity: sha512-ik3ZgC9dY/lYVVM++OISsaYDeg1tb0VtP5uL3ouh1koGOaUMDPpbFIei4JkFimWUFPn90sbMNMXQAIVOlnYKJA==}
+     engines: {node: '>=10'}
+ 
++  async-retry@1.3.3:
++    resolution: {integrity: sha512-wfr/jstw9xNi/0teMHrRW7dsz3Lt5ARhYNZ2ewpadnhaIp5mbALhOAP+EAdsC7t4Z6wqsDVv9+W6gm1Dk9mEyw==}
++
+   atomic-sleep@1.0.0:
+     resolution: {integrity: sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ==}
+     engines: {node: '>=8.0.0'}
+@@ -1774,11 +1813,17 @@ packages:
+     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
+     engines: {node: 18 || 20 || >=22}
+ 
++  base64-js@1.5.1:
++    resolution: {integrity: sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==}
++
+   baseline-browser-mapping@2.11.3:
+     resolution: {integrity: sha512-sbT0Ui/CZwyAyy7icT1Gw5P1LKRlFaHwaF6tDCW5YHq2X5SeeZFphBuIagopSfwSSZq3sQcbmEL072yphxm7ew==}
+     engines: {node: '>=6.0.0'}
+     hasBin: true
+ 
++  bignumber.js@9.3.1:
++    resolution: {integrity: sha512-Ko0uX15oIUS7wJ3Rb30Fs6SkVbLmPBAKdlm7q9+ak9bbIeFf0MwuBsQV6z7+X768/cHsfg+WlysDWJcmthjsjQ==}
++
+   body-parser@2.3.0:
+     resolution: {integrity: sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw==}
+     engines: {node: '>=18'}
+@@ -1796,6 +1841,9 @@ packages:
+     engines: {node: ^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7}
+     hasBin: true
+ 
++  buffer-equal-constant-time@1.0.1:
++    resolution: {integrity: sha512-zRpUiDwd/xk6ADqPMATG8vc9VPrkck7T07OIx0gnjmJAnHnTVXNQG3vfvWNuiZIkwu9KrKdA1iJKfsfTVxE6NA==}
++
+   bytes@3.1.2:
+     resolution: {integrity: sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==}
+     engines: {node: '>= 0.8'}
+@@ -1932,6 +1980,10 @@ packages:
+     resolution: {integrity: sha512-ndfJ/JxxMd3nw31uyKoY2naivF+r29V+Lc0svZxe1JvvIRmi8hUsrMvdOwgS1o6uBHmiz91geQ0ylPP0aj1VUA==}
+     engines: {node: '>=12'}
+ 
++  data-uri-to-buffer@4.0.1:
++    resolution: {integrity: sha512-0R9ikRb668HB7QDxT1vkpuUBtqc53YyAwMwGeUFKRojY/NWKvdZ+9UYtRfGmhqNbRkTSVpMbmyhXipFFv2cb/A==}
++    engines: {node: '>= 12'}
++
+   date-fns-jalali@4.1.0-0:
+     resolution: {integrity: sha512-hTIP/z+t+qKwBDcmmsnmjWTduxCg+5KfdqWQvb2X/8C9+knYY6epN/pfxdDuyVlSVeFz0sM5eEfwIUQ70U4ckg==}
+ 
+@@ -2076,6 +2128,12 @@ packages:
+     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
+     engines: {node: '>= 0.4'}
+ 
++  duplexify@4.1.3:
++    resolution: {integrity: sha512-M3BmBhwJRZsSx38lZyhE53Csddgzl5R7xGJNk7CVddZD6CcmwMCH8J+7AprIrQKH7TonKxaCjcv27Qmf+sQ+oA==}
++
++  ecdsa-sig-formatter@1.0.11:
++    resolution: {integrity: sha512-nagl3RYrbNv6kQkeJIpt6NJZy8twLB/2vtz6yN9Z4vRKHN4/QZJIEbqohALSgwKdnksuY3k5Addp5lg8sVoVcQ==}
++
+   ee-first@1.1.1:
+     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
+ 
+@@ -2155,6 +2213,10 @@ packages:
+     resolution: {integrity: sha512-aIL5Fx7mawVa300al2BnEE4iNvo1qETxLrPI/o05L7z6go7fCw1J6EQmbK4FmJ2AS7kgVF/KEZWufBfdClMcPg==}
+     engines: {node: '>= 0.6'}
+ 
++  event-target-shim@5.0.1:
++    resolution: {integrity: sha512-i/2XbnSz/uxRCU6+NdVJgKWDTM427+MqYbkQzD321DuCQJUqOuJKIA0IM2+W2xtYHdKOmZ4dR6fExsd4SXL+WQ==}
++    engines: {node: '>=6'}
++
+   eventemitter3@4.0.7:
+     resolution: {integrity: sha512-8guHBZCwKnFhYdHr2ysuRWErTwhoN2X8XELRlrRwpmfeY2jjuUN4taQMsULKUVo1K4DvZl+0pgfyoysHxvmvEw==}
+ 
+@@ -2166,6 +2228,9 @@ packages:
+     resolution: {integrity: sha512-hIS4idWWai69NezIdRt2xFVofaF4j+6INOpJlVOLDO8zXGpUVEVzIYk12UUi2JzjEzWL3IOAxcTubgz9Po0yXw==}
+     engines: {node: '>= 18'}
+ 
++  extend@3.0.2:
++    resolution: {integrity: sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g==}
++
+   fast-copy@4.0.4:
+     resolution: {integrity: sha512-eVAiWVNPSEGIzDl5yPuLrx8fNMogScXvD9xp1Kzd41FjRIz2I3sSIcxsFeM5EzFfHAfobdvs8ZySffUopljvIA==}
+ 
+@@ -2186,6 +2251,13 @@ packages:
+   fast-uri@3.1.4:
+     resolution: {integrity: sha512-8JnbkQ4juDyvYs4mgFGQqg4yCYtFDtUtmp2QIQq11ZZe5CFQ5wcqm1rqDgAh/QdMySuBnPzMUiJUNZG5N/AiQw==}
+ 
++  fast-xml-builder@1.3.1:
++    resolution: {integrity: sha512-pIM/1n3ntFXKYrUZwW7QCK0gAW7XY+wzj1YMIV3tLDvPj/V+zTGJK5e3/4WJfwj0qWw2ElNXiTixda/R+3YSug==}
++
++  fast-xml-parser@5.11.2:
++    resolution: {integrity: sha512-R9iDuNrQYeQut46cn2r2wHKn4HYzVDvDm5J1wW+koZewykv0yuO2HChTYeZtrULyHIDM9cj9TUXloCsueCQUog==}
++    hasBin: true
++
+   fastq@1.20.1:
+     resolution: {integrity: sha512-GGToxJ/w1x32s/D2EKND7kTil4n8OVk/9mycTc4VDza13lOvpUZTGX3mFSCtV9ksdGBVzvsyAVLM6mHFThxXxw==}
+ 
+@@ -2198,6 +2270,10 @@ packages:
+       picomatch:
+         optional: true
+ 
++  fetch-blob@3.2.0:
++    resolution: {integrity: sha512-7yAQpD2UMJzLi1Dqv7qFYnPbaPx7ZfFK6PiIxQ4PfkGPyNyl2Ugx+a/umUonmKqjhM4DnfbMvdX6otXq83soQQ==}
++    engines: {node: ^12.20 || >= 14.13}
++
+   figures@6.1.0:
+     resolution: {integrity: sha512-d+l3qxjSesT4V7v2fh+QnmFnUWv9lSpjarhShNTgBOfA0ttejbQUAlHLitbjkoRiDulW0OPoQPYIGhIC8ohejg==}
+     engines: {node: '>=18'}
+@@ -2214,6 +2290,10 @@ packages:
+     resolution: {integrity: sha512-JGG8pvDi2C+JxidYdIwQDyS/CgcrIdh18cvgxcBge3wSHRQOrooMD3GlFBcmMJAN9M42SAZjDp5zv1dglJjwww==}
+     engines: {node: '>=20'}
+ 
++  formdata-polyfill@4.0.10:
++    resolution: {integrity: sha512-buewHzMvYL29jdeQTVILecSaZKnt/RJWjoZCF5OW60Z67/GmSLBkOFM7qh1PI3zFNtJbaZL5eQu1vLfazOwj4g==}
++    engines: {node: '>=12.20.0'}
++
+   forwarded@0.2.0:
+     resolution: {integrity: sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==}
+     engines: {node: '>= 0.6'}
+@@ -2253,6 +2333,14 @@ packages:
+   function-bind@1.1.2:
+     resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
+ 
++  gaxios@7.3.1:
++    resolution: {integrity: sha512-kB3rzJV7d9juLZh8/56QTXCwQfxyhdOMdyYk1HdQKFtF8TJTDTZQJtixWIwXdE9Jji91mC41DUNpjleo4L4eAQ==}
++    engines: {node: '>=18'}
++
++  gcp-metadata@9.2.0:
++    resolution: {integrity: sha512-eV9lxydJ1sLtP0Kpkd/7RNHuD8ZXL16nqaa4MI4tUargdSBzlkCnZ33ykSQddJFe/hdc4Tmo5tUP31szLDct3Q==}
++    engines: {node: '>=22'}
++
+   gensync@1.0.0-beta.2:
+     resolution: {integrity: sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg==}
+     engines: {node: '>=6.9.0'}
+@@ -2284,6 +2372,14 @@ packages:
+     resolution: {integrity: sha512-AOIgSQCepiJYwP3ARnGx+5VnTu2HBYdzbGP45eLw1vr3zB3vZLeyed1sC9hnbcOc9/SrMyM5RPQrkGz4aS9Zow==}
+     engines: {node: '>= 6'}
+ 
++  google-auth-library@11.3.0:
++    resolution: {integrity: sha512-gZCyszARHj47WNcKrAcQtimDwtTZpydRZ3HSeb66hObfQU9uaG50ejsZ8LzGISIVAjpsZEouGVs65Q/XRau0Qg==}
++    engines: {node: '>=22'}
++
++  google-logging-utils@2.1.0:
++    resolution: {integrity: sha512-1R6uiq6XhXW2ZrcGtZpGgVDsYGzSmveVOn8Pp37qe1fbThHZ34e3t3eXj5mVu6PFSVx9fvB1KNVnYgVtq/BRcA==}
++    engines: {node: '>=22'}
++
+   gopd@1.2.0:
+     resolution: {integrity: sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==}
+     engines: {node: '>= 0.4'}
+@@ -2302,10 +2398,21 @@ packages:
+   help-me@5.0.0:
+     resolution: {integrity: sha512-7xgomUX6ADmcYzFik0HzAxh/73YlKR9bmFzf51CZwR+b6YtzU2m0u49hQCqV6SvlqIqsaxovfwdvbnsw3b/zpg==}
+ 
++  html-entities@2.6.0:
++    resolution: {integrity: sha512-kig+rMn/QOVRvr7c86gQ8lWXq+Hkv6CbAH1hLu+RG338StTpE8Z0b44SDVaqVu7HGKf27frdmUYEs9hTUX/cLQ==}
++
+   http-errors@2.0.1:
+     resolution: {integrity: sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==}
+     engines: {node: '>= 0.8'}
+ 
++  http-proxy-agent@7.0.2:
++    resolution: {integrity: sha512-T1gkAiYYDWYx3V5Bmyu7HcfcvL7mUrTWiM6yOfa3PIphViJ/gFPbvidQ+veqSOHci/PxBcDabeUNCzpOODJZig==}
++    engines: {node: '>= 14'}
++
++  https-proxy-agent@7.0.6:
++    resolution: {integrity: sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw==}
++    engines: {node: '>= 14'}
++
+   human-signals@8.0.1:
+     resolution: {integrity: sha512-eKCa6bwnJhvxj14kZk5NCPc6Hb6BdsU9DZcOnmQKSnO1VKrfV0zCvtttPZUsBvjmNDn8rpcJfpwSYnHBjc95MQ==}
+     engines: {node: '>=18.18.0'}
+@@ -2358,6 +2465,9 @@ packages:
+     resolution: {integrity: sha512-mE00Gnza5EEB3Ds0HfMyllZzbBrmLOX3vfWoj9A9PEnTfratQ/BcaJOuMhnkhjXvb2+FkY3VuHqtAGpTPmglFQ==}
+     engines: {node: '>=18'}
+ 
++  is-unsafe@2.0.2:
++    resolution: {integrity: sha512-HgbIHPBH0KHHCcjLfGsCvhtPTVxjaAZlXjwdz7/GQC40SjSe4sfQsar8J5VFo8JOSbarkpV0OLG95bbaNd9aAQ==}
++
+   isexe@2.0.0:
+     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
+ 
+@@ -2381,6 +2491,9 @@ packages:
+     engines: {node: '>=6'}
+     hasBin: true
+ 
++  json-bigint@1.0.0:
++    resolution: {integrity: sha512-SiPv/8VpZuWbvLSMtTDU8hEfrZWg/mH/nV/b4o0CYbSxu1UIQPLdwKOCIyLQX+VIPO5vrLX3i8qtqFyhdPSUSQ==}
++
+   json-schema-traverse@1.0.0:
+     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
+ 
+@@ -2396,6 +2509,12 @@ packages:
+     resolution: {integrity: sha512-p/nXbhSEcu3pZRdkW1OfJhpsVtW1gd4Wa1fnQc9YLiTfAjn0312eMKimbdIQzuZl9aa9xUGaRlP9T/CJE/ditQ==}
+     engines: {node: '>=0.10.0'}
+ 
++  jwa@2.0.1:
++    resolution: {integrity: sha512-hRF04fqJIP8Abbkq5NKGN0Bbr3JxlQ+qhZufXVr0DvujKy93ZCbXZMHDL4EOtodSbCWxOqR8MS1tXA5hwqCXDg==}
++
++  jws@4.0.1:
++    resolution: {integrity: sha512-EKI/M/yqPncGUUh44xz0PxSidXFr/+r0pA70+gIYhjv+et7yxM+s29Y+VGDkovRofQem0fs7Uvf4+YmAdyRduA==}
++
+   leaflet@1.9.4:
+     resolution: {integrity: sha512-nxS1ynzJOmOlHp+iL3FyWqK89GtNL8U8rvlMOsQdTTssxZwCXh8N2NB3GDQOL+YR3XnWyZAxwQixURb+FA74PA==}
+ 
+@@ -2477,6 +2596,11 @@ packages:
+     resolution: {integrity: sha512-Lbgzdk0h4juoQ9fCKXW4by0UJqj+nOOrI9MJ1sSj4nI8aI2eo1qmvQEie4VD1glsS250n15LsWsYtCugiStS5A==}
+     engines: {node: '>=18'}
+ 
++  mime@3.0.0:
++    resolution: {integrity: sha512-jSCU7/VB1loIWBZe14aEYHU/+1UMEHoaO7qxCOVJOw9GgH72VAWppxNcjU+x9a2k3GSIBXNKxXQFqRvvZ7vr3A==}
++    engines: {node: '>=10.0.0'}
++    hasBin: true
++
+   minimatch@10.2.5:
+     resolution: {integrity: sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg==}
+     engines: {node: 18 || 20 || >=22}
+@@ -2514,6 +2638,15 @@ packages:
+       react: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
+       react-dom: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
+ 
++  node-domexception@1.0.0:
++    resolution: {integrity: sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==}
++    engines: {node: '>=10.5.0'}
++    deprecated: Use your platform's native DOMException instead
++
++  node-fetch@3.3.2:
++    resolution: {integrity: sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA==}
++    engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
++
+   node-releases@2.0.51:
+     resolution: {integrity: sha512-wRNIrw4DmVLKQlbgOMdkMx27Wrpzes2hh5Jtbi2bjPd+4wJstWIqP5A+lscnqbm0xxmT5Bpg8Lec5ItEBwx6BQ==}
+     engines: {node: '>=18'}
+@@ -2551,6 +2684,10 @@ packages:
+       prettier:
+         optional: true
+ 
++  p-limit@3.1.0:
++    resolution: {integrity: sha512-TYOanM3wGwNGsZN2cVTYPArw454xnXj5qmWF1bEoAc4+cU/ol7GVh7odevjp1FNHduHc3KZMcFduxU5Xc6uJRQ==}
++    engines: {node: '>=10'}
++
+   p-limit@4.0.0:
+     resolution: {integrity: sha512-5b0R4txpzjPWVw/cXXUResoD4hb6U/x9BH08L7nw+GN1sezDzPdxeRvpc9c433fZhBan/wusjbCsqwqm4EIBIQ==}
+     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
+@@ -2567,6 +2704,10 @@ packages:
+     resolution: {integrity: sha512-CiyeOxFT/JZyN5m0z9PfXw4SCBJ6Sygz1Dpl0wqjlhDEGGBP1GnsUVEL0p63hoG1fcj3fHynXi9NYO4nWOL+qQ==}
+     engines: {node: '>= 0.8'}
+ 
++  path-expression-matcher@1.6.2:
++    resolution: {integrity: sha512-enSlaiat05iasnzmgNxRj8reFdj3puY2QpNgP1aPIaVfT6nn9ICuPoFlKHk8EN22HcwewshO+mN2DGbkCEOtqQ==}
++    engines: {node: '>=14.0.0'}
++
+   path-key@3.1.1:
+     resolution: {integrity: sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==}
+     engines: {node: '>=8'}
+@@ -2820,6 +2961,10 @@ packages:
+     resolution: {integrity: sha512-FS+XFBNvn3GTAWq26joslQgWNoFu08F4kl0J4CgdNKADkdSGXQyTCnKteIAJy96Br6YbpEU1LSzV5dYtjMkMDg==}
+     engines: {node: '>=0.10.0'}
+ 
++  readable-stream@3.6.2:
++    resolution: {integrity: sha512-9u/sniCrY3D5WdsERHzHE4G2YCXqoG5FTHUiCC4SIbr6XcLZBY05ya9EKjYek9O5xOAwjGq+1JdGBAS7Q9ScoA==}
++    engines: {node: '>= 6'}
++
+   readdirp@4.1.2:
+     resolution: {integrity: sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==}
+     engines: {node: '>= 14.18.0'}
+@@ -2858,6 +3003,14 @@ packages:
+   resolve-pkg-maps@1.0.0:
+     resolution: {integrity: sha512-seS2Tj26TBVOC2NIc2rOe2y2ZO7efxITtLZcGSOnHHNOQ7CkiUBfw0Iw2ck6xkIhPwLhKNLS8BO+hEpngQlqzw==}
+ 
++  retry-request@9.1.0:
++    resolution: {integrity: sha512-FILyVbis+DTo3KRbtKceqpj1595wIF+XQFW/+AVOBdCQmxwNDgcNXXr2FNM0Ej2qD7zVXbJGfH7lo4jB0wwhKA==}
++    engines: {node: '>=22'}
++
++  retry@0.13.1:
++    resolution: {integrity: sha512-XQBQ3I8W1Cge0Seh+6gjj03LbmRFWuoszgK9ooCpwYIrhhoO80pfq4cUkU5DkknwfOfFteRwlZ56PYOGYyFWdg==}
++    engines: {node: '>= 4'}
++
+   reusify@1.1.0:
+     resolution: {integrity: sha512-g6QUff04oZpHs0eG5p83rFLhHeV00ug/Yf9nZM6fLeUrPguBTkTQOdpAWWspMh55TZfVQDPaN3NQJfbVRAxdIw==}
+     engines: {iojs: '>=1.0.0', node: '>=0.10.0'}
+@@ -2874,6 +3027,9 @@ packages:
+   run-parallel@1.2.0:
+     resolution: {integrity: sha512-5l4VyZR86LZ/lDxZTR6jqL8AFE2S0IFLMP26AbjsLVADxHdhB/c0GUsH+y39UfCi3dzz8OlQuPmnaJOMoDHQBA==}
+ 
++  safe-buffer@5.2.1:
++    resolution: {integrity: sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ==}
++
+   safe-stable-stringify@2.5.0:
+     resolution: {integrity: sha512-b3rppTKm9T+PsVCBEOUR46GWI7fdOs00VKZ1+9c1EWDaDMvjQc6tUwuFyIprgGgTcWoVHSKrU8H31ZHA2e0RHA==}
+     engines: {node: '>=10'}
+@@ -2951,10 +3107,19 @@ packages:
+     resolution: {integrity: sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==}
+     engines: {node: '>= 0.8'}
+ 
++  stream-events@1.0.5:
++    resolution: {integrity: sha512-E1GUzBSgvct8Jsb3v2X15pjzN1tYebtbLaMg+eBOUOAxgbLoSbT2NS91ckc5lJD1KfLjId+jXJRgo0qnV5Nerg==}
++
++  stream-shift@1.0.3:
++    resolution: {integrity: sha512-76ORR0DO1o1hlKwTbi/DM3EXWGf3ZJYO8cXX5RJwnul2DEg2oyoZyjLNoQM8WsvZiFKCRfC1O0J7iCvie3RZmQ==}
++
+   string-argv@0.3.2:
+     resolution: {integrity: sha512-aqD2Q0144Z+/RqG52NeHEkZauTAUWJO8c6yTftGJKO3Tja5tUgIfmIl6kExvhtxSDP7fXB6DvzkfMpCd/F3G+Q==}
+     engines: {node: '>=0.6.19'}
+ 
++  string_decoder@1.3.0:
++    resolution: {integrity: sha512-hkRX8U1WjJFd8LsDJ2yQ/wWWxaopEsABU1XfkM8A+j0+85JAGppt16cr1Whg6KIbb4okU6Mql6BOj+uup/wKeA==}
++
+   strip-final-newline@4.0.0:
+     resolution: {integrity: sha512-aulFJcD6YK8V1G7iRB5tigAP4TsHBZZrOV8pjV++zdUwmeV8uzbY7yn6h9MswN62adStNZFuCIx4haBnRuMDaw==}
+     engines: {node: '>=18'}
+@@ -2963,6 +3128,12 @@ packages:
+     resolution: {integrity: sha512-1tB5mhVo7U+ETBKNf92xT4hrQa3pm0MZ0PQvuDnWgAAGHDsfp4lPSpiS6psrSiet87wyGPh9ft6wmhOMQ0hDiw==}
+     engines: {node: '>=14.16'}
+ 
++  strnum@2.5.1:
++    resolution: {integrity: sha512-UM4nTLWzQiDBseVxUGxN0wJzIk0UU89Qi7pKXz9qISo+lhviJikTuikBsK/oFRlpvYHvSdz0TVoLyQ+sEpYwxA==}
++
++  stubs@3.0.0:
++    resolution: {integrity: sha512-PdHt7hHUJKxvTCgbKX9C1V/ftOcjJQgz8BZwNfV5c4B6dcGqlpelTbJ999jBGZ2jYiPAwcX5dP6oBwVlBlUbxw==}
++
+   tailwind-merge@3.6.0:
+     resolution: {integrity: sha512-uxL7qAVQriqRQPAyK3pj66VqskWqoZ37PW94jwOTwNfq/z9oyu1V+eqrZqtR2+fCiXdYOZe/Modt8GtvqNzu+w==}
+ 
+@@ -2978,6 +3149,10 @@ packages:
+     resolution: {integrity: sha512-uxc/zpqFg6x7C8vOE7lh6Lbda8eEL9zmVm/PLeTPBRhh1xCgdWaQ+J1CUieGpIfm2HdtsUpRv+HshiasBMcc6A==}
+     engines: {node: '>=6'}
+ 
++  teeny-request@11.1.0:
++    resolution: {integrity: sha512-AXc3Afs3pUWpU7vFqOQ8xSgOr2B26Wjc2APztFYzv9K6GSWYVmNCaps5+dS1fBwNcR2atyc1UwffR1rLnzH0wA==}
++    engines: {node: '>=22'}
++
+   thread-stream@3.1.0:
+     resolution: {integrity: sha512-OqyPZ9u96VohAyMfJykzmivOrY2wfMSf3C5TtFJVgN+Hm6aj+voFhlK+kZEIv2FBh1X6Xp3DlnCOfEQ3B2J86A==}
+ 
+@@ -3140,6 +3315,10 @@ packages:
+       yaml:
+         optional: true
+ 
++  web-streams-polyfill@3.3.3:
++    resolution: {integrity: sha512-d2JWLCivmZYTSIoge9MsgFCZrt571BikcWGYkjC1khllbTeDlGqZ2D8vD8E/lJa8WGWbb7Plm8/XJYV7IJHZZw==}
++    engines: {node: '>= 8'}
++
+   which@2.0.2:
+     resolution: {integrity: sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==}
+     engines: {node: '>= 8'}
+@@ -3153,6 +3332,10 @@ packages:
+   wrappy@1.0.2:
+     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
+ 
++  xml-naming@0.3.0:
++    resolution: {integrity: sha512-ghig2TBE/H11aOVgmahA3MhimvkBr6JIYknH/Dhdk10nXwdbIqBJsbfMxpvFPG8bAw77gN29aQWvKpmVoPlvPQ==}
++    engines: {node: '>=16.0.0'}
++
+   xtend@4.0.2:
+     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
+     engines: {node: '>=0.4'}
+@@ -3165,6 +3348,10 @@ packages:
+     engines: {node: '>= 14.6'}
+     hasBin: true
+ 
++  yocto-queue@0.1.0:
++    resolution: {integrity: sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==}
++    engines: {node: '>=10'}
++
+   yocto-queue@1.2.2:
+     resolution: {integrity: sha512-4LCcse/U2MHZ63HAJVE+v71o7yOdIe4cZ70Wpf8D/IyjDKYQLV5GD46B+hSTjJsvV5PztjvHoU580EftxjDZFQ==}
+     engines: {node: '>=12.20'}
+@@ -3332,6 +3519,33 @@ snapshots:
+       '@shikijs/types': 3.23.0
+       '@shikijs/vscode-textmate': 10.0.2
+ 
++  '@google-cloud/paginator@7.2.0':
++    dependencies:
++      extend: 3.0.2
++
++  '@google-cloud/projectify@6.2.0': {}
++
++  '@google-cloud/promisify@6.2.0': {}
++
++  '@google-cloud/storage@8.4.0':
++    dependencies:
++      '@google-cloud/paginator': 7.2.0
++      '@google-cloud/projectify': 6.2.0
++      '@google-cloud/promisify': 6.2.0
++      abort-controller: 3.0.0
++      async-retry: 1.3.3
++      duplexify: 4.1.3
++      fast-xml-parser: 5.11.2
++      gaxios: 7.3.1
++      google-auth-library: 11.3.0
++      html-entities: 2.6.0
++      mime: 3.0.0
++      p-limit: 3.1.0
++      retry-request: 9.1.0
++      teeny-request: 11.1.0
++    transitivePeerDependencies:
++      - supports-color
++
+   '@hookform/resolvers@3.10.0(react-hook-form@7.83.0(react@19.1.0))':
+     dependencies:
+       react-hook-form: 7.83.0(react@19.1.0)
+@@ -3355,6 +3569,8 @@ snapshots:
+       '@jridgewell/resolve-uri': 3.1.2
+       '@jridgewell/sourcemap-codec': 1.5.5
+ 
++  '@nodable/entities@3.1.0': {}
++
+   '@nodelib/fs.scandir@2.1.5':
+     dependencies:
+       '@nodelib/fs.stat': 2.0.5
+@@ -4415,6 +4631,10 @@ snapshots:
+     transitivePeerDependencies:
+       - supports-color
+ 
++  abort-controller@3.0.0:
++    dependencies:
++      event-target-shim: 5.0.1
++
+   accepts@2.0.0:
+     dependencies:
+       mime-types: 3.0.2
+@@ -4422,6 +4642,8 @@ snapshots:
+ 
+   acorn@8.17.0: {}
+ 
++  agent-base@7.1.4: {}
++
+   ajv-draft-04@1.0.0(ajv@8.20.0):
+     optionalDependencies:
+       ajv: 8.20.0
+@@ -4437,18 +4659,28 @@ snapshots:
+       json-schema-traverse: 1.0.0
+       require-from-string: 2.0.2
+ 
++  anynum@1.0.1: {}
++
+   argparse@2.0.1: {}
+ 
+   aria-hidden@1.2.6:
+     dependencies:
+       tslib: 2.8.1
+ 
++  async-retry@1.3.3:
++    dependencies:
++      retry: 0.13.1
++
+   atomic-sleep@1.0.0: {}
+ 
+   balanced-match@4.0.4: {}
+ 
++  base64-js@1.5.1: {}
++
+   baseline-browser-mapping@2.11.3: {}
+ 
++  bignumber.js@9.3.1: {}
++
+   body-parser@2.3.0:
+     dependencies:
+       bytes: 3.1.2
+@@ -4479,6 +4711,8 @@ snapshots:
+       node-releases: 2.0.51
+       update-browserslist-db: 1.2.3(browserslist@4.28.7)
+ 
++  buffer-equal-constant-time@1.0.1: {}
++
+   bytes@3.1.2: {}
+ 
+   call-bind-apply-helpers@1.0.2:
+@@ -4597,6 +4831,8 @@ snapshots:
+ 
+   d3-timer@3.0.1: {}
+ 
++  data-uri-to-buffer@4.0.1: {}
++
+   date-fns-jalali@4.1.0-0: {}
+ 
+   date-fns@3.6.0: {}
+@@ -4645,6 +4881,17 @@ snapshots:
+       es-errors: 1.3.0
+       gopd: 1.2.0
+ 
++  duplexify@4.1.3:
++    dependencies:
++      end-of-stream: 1.4.5
++      inherits: 2.0.4
++      readable-stream: 3.6.2
++      stream-shift: 1.0.3
++
++  ecdsa-sig-formatter@1.0.11:
++    dependencies:
++      safe-buffer: 5.2.1
++
+   ee-first@1.1.1: {}
+ 
+   electron-to-chromium@1.5.396: {}
+@@ -4702,6 +4949,8 @@ snapshots:
+ 
+   etag@1.8.1: {}
+ 
++  event-target-shim@5.0.1: {}
++
+   eventemitter3@4.0.7: {}
+ 
+   execa@9.6.1:
+@@ -4752,6 +5001,8 @@ snapshots:
+     transitivePeerDependencies:
+       - supports-color
+ 
++  extend@3.0.2: {}
++
+   fast-copy@4.0.4: {}
+ 
+   fast-deep-equal@3.1.3: {}
+@@ -4770,6 +5021,20 @@ snapshots:
+ 
+   fast-uri@3.1.4: {}
+ 
++  fast-xml-builder@1.3.1:
++    dependencies:
++      path-expression-matcher: 1.6.2
++      xml-naming: 0.3.0
++
++  fast-xml-parser@5.11.2:
++    dependencies:
++      '@nodable/entities': 3.1.0
++      fast-xml-builder: 1.3.1
++      is-unsafe: 2.0.2
++      path-expression-matcher: 1.6.2
++      strnum: 2.5.1
++      xml-naming: 0.3.0
++
+   fastq@1.20.1:
+     dependencies:
+       reusify: 1.1.0
+@@ -4778,6 +5043,11 @@ snapshots:
+     optionalDependencies:
+       picomatch: 4.0.5
+ 
++  fetch-blob@3.2.0:
++    dependencies:
++      node-domexception: 1.0.0
++      web-streams-polyfill: 3.3.3
++
+   figures@6.1.0:
+     dependencies:
+       is-unicode-supported: 2.1.0
+@@ -4802,6 +5072,10 @@ snapshots:
+       locate-path: 8.0.0
+       unicorn-magic: 0.3.0
+ 
++  formdata-polyfill@4.0.10:
++    dependencies:
++      fetch-blob: 3.2.0
++
+   forwarded@0.2.0: {}
+ 
+   framer-motion@12.42.2(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
+@@ -4829,6 +5103,22 @@ snapshots:
+ 
+   function-bind@1.1.2: {}
+ 
++  gaxios@7.3.1:
++    dependencies:
++      extend: 3.0.2
++      https-proxy-agent: 7.0.6
++      node-fetch: 3.3.2
++    transitivePeerDependencies:
++      - supports-color
++
++  gcp-metadata@9.2.0:
++    dependencies:
++      gaxios: 7.3.1
++      google-logging-utils: 2.1.0
++      json-bigint: 1.0.0
++    transitivePeerDependencies:
++      - supports-color
++
+   gensync@1.0.0-beta.2: {}
+ 
+   get-caller-file@2.0.5: {}
+@@ -4866,6 +5156,19 @@ snapshots:
+     dependencies:
+       is-glob: 4.0.3
+ 
++  google-auth-library@11.3.0:
++    dependencies:
++      base64-js: 1.5.1
++      ecdsa-sig-formatter: 1.0.11
++      gaxios: 7.3.1
++      gcp-metadata: 9.2.0
++      google-logging-utils: 2.1.0
++      jws: 4.0.1
++    transitivePeerDependencies:
++      - supports-color
++
++  google-logging-utils@2.1.0: {}
++
+   gopd@1.2.0: {}
+ 
+   graceful-fs@4.2.11: {}
+@@ -4878,6 +5181,8 @@ snapshots:
+ 
+   help-me@5.0.0: {}
+ 
++  html-entities@2.6.0: {}
++
+   http-errors@2.0.1:
+     dependencies:
+       depd: 2.0.0
+@@ -4886,6 +5191,20 @@ snapshots:
+       statuses: 2.0.2
+       toidentifier: 1.0.1
+ 
++  http-proxy-agent@7.0.2:
++    dependencies:
++      agent-base: 7.1.4
++      debug: 4.4.3
++    transitivePeerDependencies:
++      - supports-color
++
++  https-proxy-agent@7.0.6:
++    dependencies:
++      agent-base: 7.1.4
++      debug: 4.4.3
++    transitivePeerDependencies:
++      - supports-color
++
+   human-signals@8.0.1: {}
+ 
+   iconv-lite@0.7.3:
+@@ -4919,6 +5238,8 @@ snapshots:
+ 
+   is-unicode-supported@2.1.0: {}
+ 
++  is-unsafe@2.0.2: {}
++
+   isexe@2.0.0: {}
+ 
+   jiti@2.7.0: {}
+@@ -4933,6 +5254,10 @@ snapshots:
+ 
+   jsesc@3.1.0: {}
+ 
++  json-bigint@1.0.0:
++    dependencies:
++      bignumber.js: 9.3.1
++
+   json-schema-traverse@1.0.0: {}
+ 
+   json5@2.2.3: {}
+@@ -4945,6 +5270,17 @@ snapshots:
+ 
+   jsonpointer@5.0.1: {}
+ 
++  jwa@2.0.1:
++    dependencies:
++      buffer-equal-constant-time: 1.0.1
++      ecdsa-sig-formatter: 1.0.11
++      safe-buffer: 5.2.1
++
++  jws@4.0.1:
++    dependencies:
++      jwa: 2.0.1
++      safe-buffer: 5.2.1
++
+   leaflet@1.9.4: {}
+ 
+   leven@4.1.0: {}
+@@ -5016,6 +5352,8 @@ snapshots:
+     dependencies:
+       mime-db: 1.54.0
+ 
++  mime@3.0.0: {}
++
+   minimatch@10.2.5:
+     dependencies:
+       brace-expansion: 5.0.8
+@@ -5043,6 +5381,14 @@ snapshots:
+       react: 19.1.0
+       react-dom: 19.1.0(react@19.1.0)
+ 
++  node-domexception@1.0.0: {}
++
++  node-fetch@3.3.2:
++    dependencies:
++      data-uri-to-buffer: 4.0.1
++      fetch-blob: 3.2.0
++      formdata-polyfill: 4.0.10
++
+   node-releases@2.0.51: {}
+ 
+   npm-run-path@6.0.0:
+@@ -5102,6 +5448,10 @@ snapshots:
+       - supports-color
+       - typescript
+ 
++  p-limit@3.1.0:
++    dependencies:
++      yocto-queue: 0.1.0
++
+   p-limit@4.0.0:
+     dependencies:
+       yocto-queue: 1.2.2
+@@ -5114,6 +5464,8 @@ snapshots:
+ 
+   parseurl@1.3.3: {}
+ 
++  path-expression-matcher@1.6.2: {}
++
+   path-key@3.1.1: {}
+ 
+   path-key@4.0.0: {}
+@@ -5372,6 +5724,12 @@ snapshots:
+ 
+   react@19.1.0: {}
+ 
++  readable-stream@3.6.2:
++    dependencies:
++      inherits: 2.0.4
++      string_decoder: 1.3.0
++      util-deprecate: 1.0.2
++
+   readdirp@4.1.2: {}
+ 
+   readdirp@5.0.0: {}
+@@ -5403,6 +5761,12 @@ snapshots:
+ 
+   resolve-pkg-maps@1.0.0: {}
+ 
++  retry-request@9.1.0:
++    dependencies:
++      extend: 3.0.2
++
++  retry@0.13.1: {}
++
+   reusify@1.1.0: {}
+ 
+   rollup@4.62.3:
+@@ -5426,6 +5790,8 @@ snapshots:
+     dependencies:
+       queue-microtask: 1.2.3
+ 
++  safe-buffer@5.2.1: {}
++
+   safe-stable-stringify@2.5.0: {}
+ 
+   safer-buffer@2.1.2: {}
+@@ -5514,12 +5880,28 @@ snapshots:
+ 
+   statuses@2.0.2: {}
+ 
++  stream-events@1.0.5:
++    dependencies:
++      stubs: 3.0.0
++
++  stream-shift@1.0.3: {}
++
+   string-argv@0.3.2: {}
+ 
++  string_decoder@1.3.0:
++    dependencies:
++      safe-buffer: 5.2.1
++
+   strip-final-newline@4.0.0: {}
+ 
+   strip-json-comments@5.0.3: {}
+ 
++  strnum@2.5.1:
++    dependencies:
++      anynum: 1.0.1
++
++  stubs@3.0.0: {}
++
+   tailwind-merge@3.6.0: {}
+ 
+   tailwindcss-animate@1.0.7(tailwindcss@4.3.3):
+@@ -5530,6 +5912,15 @@ snapshots:
+ 
+   tapable@2.3.3: {}
+ 
++  teeny-request@11.1.0:
++    dependencies:
++      http-proxy-agent: 7.0.2
++      https-proxy-agent: 7.0.6
++      node-fetch: 3.3.2
++      stream-events: 1.0.5
++    transitivePeerDependencies:
++      - supports-color
++
+   thread-stream@3.1.0:
+     dependencies:
+       real-require: 0.2.0
+@@ -5663,6 +6054,8 @@ snapshots:
+       tsx: 4.23.1
+       yaml: 2.9.0
+ 
++  web-streams-polyfill@3.3.3: {}
++
+   which@2.0.2:
+     dependencies:
+       isexe: 2.0.0
+@@ -5676,12 +6069,16 @@ snapshots:
+ 
+   wrappy@1.0.2: {}
+ 
++  xml-naming@0.3.0: {}
++
+   xtend@4.0.2: {}
+ 
+   yallist@3.1.1: {}
+ 
+   yaml@2.9.0: {}
+ 
++  yocto-queue@0.1.0: {}
++
+   yocto-queue@1.2.2: {}
+ 
+   yoctocolors@2.2.0: {}
+-- 
+2.54.0
+
