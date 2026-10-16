@@ -1,11 +1,10 @@
 import { Router, type IRouter } from "express";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   db,
   postoAtributosHistoricoTable,
   postoAtributosTable,
   type JsonValue,
-  type PostoAtributo,
 } from "@workspace/db";
 import {
   AtualizarPostoAmenidadesBody,
@@ -18,17 +17,14 @@ import {
 } from "@workspace/api-zod";
 import { sessaoDe } from "../lib/escopo";
 import { getSnapshot } from "../lib/snapshot";
-import { abertoAgora, CATALOGO_AMENIDADES, definicaoAmenidade, horarioPublicavel, metadadosPublicosValidos, nomeBandeira, validarValorAmenidade, valorPadraoAmenidade } from "../lib/posto-amenidades";
-import { paramId, validar } from "../lib/http";
+import { abertoAgora, CATALOGO_AMENIDADES, dataCalendarioValida, definicaoAmenidade, hojeEmSaoPaulo, horarioPublicavel, metadadosConfirmadosValidos, nomeBandeira, normalizarValorAmenidade, projetarAmenidadesPublicas, validarValorAmenidade, valorPadraoAmenidade } from "../lib/posto-amenidades";
+import { validar } from "../lib/http";
 import { somenteMaster } from "../middlewares/acesso";
 
 const router: IRouter = Router();
 export const postoAmenidadesPublicasRouter: IRouter = Router();
-const BANDERA_KEY = "bandeira_atual";
-
-function toDateString(value: Date | null): string | null {
-  return value ? value.toISOString().slice(0, 10) : null;
-}
+const BANDEIRA_KEY = "bandeira_atual";
+class ConflitoAmenidades extends Error {}
 
 function igual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -40,9 +36,11 @@ async function lerCatalogo(postoId: string) {
     db
       .select()
       .from(postoAtributosHistoricoTable)
-      .where(eq(postoAtributosHistoricoTable.postoId, postoId))
-      .orderBy(desc(postoAtributosHistoricoTable.alteradoEm))
-      .limit(50),
+      .where(and(
+        eq(postoAtributosHistoricoTable.postoId, postoId),
+        eq(postoAtributosHistoricoTable.chave, BANDEIRA_KEY),
+      ))
+      .orderBy(desc(postoAtributosHistoricoTable.alteradoEm), desc(postoAtributosHistoricoTable.id)),
   ]);
   const porChave = new Map(rows.map((row) => [row.chave, row]));
   const itens = CATALOGO_AMENIDADES.map((campo) => {
@@ -63,13 +61,16 @@ async function lerCatalogo(postoId: string) {
       atualizadoEm: atual?.atualizadoEm ?? null,
     };
   });
-  const status = porChave.get("status_operacional")?.valor;
-  const horario = porChave.get("horarios_funcionamento")?.valor;
-  const horarioComValor = horario ?? null;
+  const statusRow = porChave.get("status_operacional");
+  const horarioRow = porChave.get("horarios_funcionamento");
+  const fusoRow = porChave.get("fuso_horario");
+  const status = statusRow && metadadosConfirmadosValidos(statusRow) ? statusRow.valor : null;
+  const horarioComValor = horarioRow && metadadosConfirmadosValidos(horarioRow) ? horarioRow.valor : null;
   const horarios = horarioPublicavel(horarioComValor) ? horarioComValor : null;
   const statusValor = typeof status === "string" ? status : null;
+  const fuso = fusoRow && metadadosConfirmadosValidos(fusoRow) && typeof fusoRow.valor === "string" ? fusoRow.valor : null;
   const historicoBandeira = history
-    .filter((item) => item.chave === BANDERA_KEY && !igual(item.valorAnterior, item.valorNovo))
+    .filter((item) => !igual(item.valorAnterior, item.valorNovo))
     .map((item) => ({
       anterior: nomeBandeira(item.valorAnterior),
       atual: nomeBandeira(item.valorNovo),
@@ -78,7 +79,7 @@ async function lerCatalogo(postoId: string) {
     }));
   return {
     itens,
-    abertoAgora: abertoAgora(horarios, statusValor),
+    abertoAgora: abertoAgora(horarios, statusValor, new Date(), fuso),
     historicoBandeira,
   };
 }
@@ -112,6 +113,7 @@ router.put("/postos/:id/amenidades", somenteMaster, async (req, res): Promise<vo
   }
   const sessao = sessaoDe(req);
   const seen = new Set<string>();
+  const hoje = hojeEmSaoPaulo();
   for (const item of b.itens) {
     const campo = definicaoAmenidade(item.chave);
     if (!campo || seen.has(item.chave) || !validarValorAmenidade(item.chave, item.valor)) {
@@ -122,25 +124,38 @@ router.put("/postos/:id/amenidades", somenteMaster, async (req, res): Promise<vo
       res.status(400).json({ erro: "Informações internas de segurança não podem ser publicadas." });
       return;
     }
+    if (
+      (item.verificadoEm && (!dataCalendarioValida(item.verificadoEm) || item.verificadoEm > hoje)) ||
+      (item.revisarEm && !dataCalendarioValida(item.revisarEm)) ||
+      (item.verificadoEm && item.revisarEm && item.revisarEm < item.verificadoEm)
+    ) {
+      res.status(400).json({ erro: `Datas de verificação ou revisão inválidas para ${campo.rotulo}.` });
+      return;
+    }
     seen.add(item.chave);
   }
 
-  await db.transaction(async (tx) => {
+  try {
+    await db.transaction(async (tx) => {
+    // Serializa edições deste posto, inclusive quando ainda não existe nenhum atributo.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${p.id}, 0))`);
+    const atuais = await tx.select().from(postoAtributosTable).where(eq(postoAtributosTable.postoId, p.id));
+    const porChave = new Map(atuais.map((atual) => [atual.chave, atual]));
     for (const item of b.itens) {
-      const [anterior] = await tx
-        .select()
-        .from(postoAtributosTable)
-        .where(
-          and(
-            eq(postoAtributosTable.postoId, p.id),
-            eq(postoAtributosTable.chave, item.chave),
-          ),
-        );
-      const valor = item.valor as JsonValue | null;
+      const existente = porChave.get(item.chave);
+      if ((existente?.atualizadoEm.toISOString() ?? null) !== (item.versao?.toISOString() ?? null)) {
+        throw new ConflitoAmenidades("Os dados foram alterados por outra sessão. Recarregue antes de salvar.");
+      }
+    }
+    for (const item of b.itens) {
+      const anterior = porChave.get(item.chave);
+      const valor = normalizarValorAmenidade(item.chave, item.valor as JsonValue | null);
       const fonte = item.fonte?.trim() || null;
-      const verificadoEm = toDateString(item.verificadoEm);
-      const revisarEm = toDateString(item.revisarEm);
+      const verificadoEm = item.verificadoEm;
+      const revisarEm = item.revisarEm;
       const publico = campoPublicavel(item.chave, item.publico);
+      if (!anterior && !fonte && !verificadoEm && !revisarEm && !publico &&
+        igual(valor, valorPadraoAmenidade(definicaoAmenidade(item.chave)!))) continue;
       const mudou =
         !anterior ||
         !igual(anterior.valor, valor) ||
@@ -185,7 +200,12 @@ router.put("/postos/:id/amenidades", somenteMaster, async (req, res): Promise<vo
           },
         });
     }
-  });
+    });
+  } catch (error) {
+    if (!(error instanceof ConflitoAmenidades)) throw error;
+    res.status(409).json({ erro: error.message });
+    return;
+  }
 
   const catalogo = await lerCatalogo(p.id);
   res.json(
@@ -200,33 +220,11 @@ postoAmenidadesPublicasRouter.get("/postos-publicos/:id/amenidades", async (req,
   const p = validar(GetAmenidadesPublicasPostoParams, req.params, res);
   if (!p) return;
   const rows = await db.select().from(postoAtributosTable).where(eq(postoAtributosTable.postoId, p.id));
-  const publicRows = rows.filter((item) => {
-    return (
-      metadadosPublicosValidos(item) &&
-      validarValorAmenidade(item.chave, item.valor)
-    );
-  });
-  const items = publicRows.map((item) => {
-    const campo = definicaoAmenidade(item.chave)!;
-    return {
-      chave: campo.chave,
-      rotulo: campo.rotulo,
-      grupo: campo.grupo,
-      valor: item.valor,
-      verificadoEm: item.verificadoEm!,
-    };
-  });
-  const status = publicRows.find((item) => item.chave === "status_operacional")?.valor;
-  const hoursRow = publicRows.find((item) => item.chave === "horarios_funcionamento");
-  const hoursValue = hoursRow?.valor ?? null;
-  const hours = horarioPublicavel(hoursValue) ? hoursValue : null;
-  const estado = typeof status === "string" ? status : null;
-  res.set("Cache-Control", "public, max-age=60");
+  res.set("Cache-Control", "no-store");
   res.json(
     GetAmenidadesPublicasPostoResponse.parse({
       postoId: p.id,
-      abertoAgora: hoursRow && hours ? abertoAgora(hours, estado) : null,
-      itens: items,
+      ...projetarAmenidadesPublicas(rows),
     }),
   );
 });

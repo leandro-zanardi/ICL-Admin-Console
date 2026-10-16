@@ -52,5 +52,6 @@ export const postoAtributosHistoricoTable = pgTable("posto_atributos_historico",
 });
 
 export const insertPostoAtributoSchema = createInsertSchema(postoAtributosTable);
+export const insertPostoAtributoHistoricoSchema = createInsertSchema(postoAtributosHistoricoTable).omit({ id: true, alteradoEm: true });
 export type PostoAtributo = typeof postoAtributosTable.$inferSelect;
 export type PostoAtributoHistorico = typeof postoAtributosHistoricoTable.$inferSelect;

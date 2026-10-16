@@ -15,9 +15,20 @@ export interface PostoAmenidadeInputItem {
      * @nullable
      */
   fonte: string | null;
-  /** @nullable */
-  verificadoEm: Date | null;
-  /** @nullable */
-  revisarEm: Date | null;
+  /**
+     * @nullable
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
+  verificadoEm: string | null;
+  /**
+     * @nullable
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
+  revisarEm: string | null;
   publico: boolean;
+  /**
+     * AtualizadoEm recebido na leitura; null para atributo ainda não salvo
+     * @nullable
+     */
+  versao: Date | null;
 }

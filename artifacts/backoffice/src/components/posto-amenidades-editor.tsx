@@ -14,146 +14,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-
-type Dia =
-  | "segunda"
-  | "terca"
-  | "quarta"
-  | "quinta"
-  | "sexta"
-  | "sabado"
-  | "domingo";
-type DiaFormulario = {
-  fechado: boolean;
-  diaTodo: boolean;
-  abertura: string;
-  fechamento: string;
-};
-type HorarioFormulario = Record<Dia, DiaFormulario>;
-type ItemFormulario = {
-  chave: string;
-  valor: unknown;
-  fonte: string;
-  verificadoEm: string;
-  revisarEm: string;
-  publico: boolean;
-};
-type Formulario = { itens: ItemFormulario[] };
-
-const DIAS: { key: Dia; label: string }[] = [
-  { key: "segunda", label: "Segunda" },
-  { key: "terca", label: "Terça" },
-  { key: "quarta", label: "Quarta" },
-  { key: "quinta", label: "Quinta" },
-  { key: "sexta", label: "Sexta" },
-  { key: "sabado", label: "Sábado" },
-  { key: "domingo", label: "Domingo" },
-];
-
-function horarioVazio(): HorarioFormulario {
-  return Object.fromEntries(
-    DIAS.map(({ key }) => [
-      key,
-      { fechado: false, diaTodo: false, abertura: "", fechamento: "" },
-    ]),
-  ) as HorarioFormulario;
-}
-
-function objeto(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function valorHorarioFormulario(value: unknown): HorarioFormulario {
-  const raw = objeto(value);
-  if (!raw) return horarioVazio();
-  const vazio = horarioVazio();
-  for (const { key } of DIAS) {
-    const dia = objeto(raw[key]);
-    if (!dia) continue;
-    vazio[key] = {
-      fechado: dia.fechado === true,
-      diaTodo: dia.diaTodo === true,
-      abertura: typeof dia.abertura === "string" ? dia.abertura : "",
-      fechamento: typeof dia.fechamento === "string" ? dia.fechamento : "",
-    };
-  }
-  return vazio;
-}
-
-function paraFormulario(itens: PostoAmenidade[]): Formulario {
-  return {
-    itens: itens.map((item) => ({
-      chave: item.chave,
-      valor: item.tipo === "horarios" ? valorHorarioFormulario(item.valor) : (item.valor ?? ""),
-      fonte: item.fonte ?? "",
-      verificadoEm: item.verificadoEm?.slice(0, 10) ?? "",
-      revisarEm: item.revisarEm?.slice(0, 10) ?? "",
-      publico: item.interno ? false : item.publico,
-    })),
-  };
-}
-
-function horarioParaApi(value: unknown): HorarioFormulario | null {
-  const source = objeto(value);
-  if (!source) return null;
-  const normalized = horarioVazio();
-  let algumInformado = false;
-  for (const { key } of DIAS) {
-    const dia = objeto(source[key]);
-    if (!dia) return null;
-    const fechado = dia.fechado === true;
-    const diaTodo = dia.diaTodo === true;
-    const abertura = typeof dia.abertura === "string" ? dia.abertura : "";
-    const fechamento = typeof dia.fechamento === "string" ? dia.fechamento : "";
-    const informado = fechado || diaTodo || abertura !== "" || fechamento !== "";
-    algumInformado ||= informado;
-    if (informado && !fechado && !diaTodo && !(abertura && fechamento)) return null;
-    normalized[key] = {
-      fechado,
-      diaTodo,
-      abertura: fechado || diaTodo ? "" : abertura,
-      fechamento: fechado || diaTodo ? "" : fechamento,
-    };
-  }
-  if (!algumInformado) return null;
-  return normalized;
-}
-
-function horarioCompleto(value: unknown): boolean {
-  const raw = objeto(value);
-  if (!raw) return true;
-  const temAlgum = DIAS.some(({ key }) => {
-    const dia = objeto(raw[key]);
-    return Boolean(dia && (dia.fechado || dia.diaTodo || dia.abertura || dia.fechamento));
-  });
-  if (!temAlgum) return true;
-  return DIAS.every(({ key }) => {
-    const dia = objeto(raw[key]);
-    if (!dia) return false;
-    if (dia.fechado === true || dia.diaTodo === true) return true;
-    return (
-      typeof dia.abertura === "string" &&
-      typeof dia.fechamento === "string" &&
-      dia.abertura.length > 0 &&
-      dia.fechamento.length > 0 &&
-      dia.abertura !== dia.fechamento
-    );
-  });
-}
-
-function valorPublicavel(item: PostoAmenidade, formItem: ItemFormulario): boolean {
-  if (item.interno || !formItem.fonte.trim() || !formItem.verificadoEm) return false;
-  if (formItem.revisarEm && formItem.revisarEm < new Date().toISOString().slice(0, 10)) return false;
-  if (item.tipo === "horarios") return horarioParaApi(formItem.valor) !== null;
-  if (item.tipo === "texto") return typeof formItem.valor === "string" && formItem.valor.trim().length > 0;
-  return (
-    typeof formItem.valor === "string" &&
-    formItem.valor !== "nao_verificado" &&
-    formItem.valor.length > 0
-  );
-}
+import {
+  DIAS, horarioCompleto, horarioParaApi, hojeSaoPaulo, paraFormulario,
+  valorHorarioFormulario, valorPublicavel,
+  type DiaFormulario, type FormularioAmenidades, type HorarioFormulario,
+} from "@/lib/posto-amenidades-form";
 
 export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
   const queryClient = useQueryClient();
@@ -162,7 +27,7 @@ export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
   const q = useGetPostoAmenidades(postoId, {
     query: { enabled: !!postoId, queryKey, staleTime: 60_000, refetchOnWindowFocus: false },
   });
-  const form = useForm<Formulario>({ defaultValues: { itens: [] } });
+  const form = useForm<FormularioAmenidades>({ defaultValues: { itens: [] } });
   const watchedItems = form.watch("itens");
   const groups = useMemo(() => {
     const byGroup = new Map<string, { field: PostoAmenidade; index: number }[]>();
@@ -181,7 +46,11 @@ export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
         queryClient.invalidateQueries({ queryKey });
         toast({ title: "Status e amenidades atualizados" });
       },
-      onError: () => toast({ title: "Não foi possível salvar as informações", variant: "destructive" }),
+      onError: (error) => toast({
+        title: "Não foi possível salvar as informações",
+        description: error.data?.erro ?? "Tente novamente.",
+        variant: "destructive",
+      }),
     },
   });
 
@@ -210,13 +79,13 @@ export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
       aside={
         <span data-testid="status-aberto-agora" className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           <Clock3 className="size-3" />
-          {q.data.abertoAgora === null ? "Horário não definido" : q.data.abertoAgora ? "Aberto agora" : "Fechado agora"}
+          {q.data.abertoAgora === null ? "Horário / fuso não verificado" : q.data.abertoAgora ? "Aberto agora" : "Fechado agora"}
         </span>
       }
       bodyClass="p-4"
     >
       <p className="mb-4 max-w-3xl text-[12.5px] text-muted-foreground">
-        Registre o valor, a fonte e a data da verificação. Informações públicas só aparecem após confirmação e dentro do prazo de revisão.
+        Registre o valor, a fonte e a data da verificação. A API do cliente recebe apenas informações autorizadas e com verificação em dia; a exibição no app depende da integração do ICL App.
       </p>
       {q.data.historicoBandeira.length > 0 && (
         <div data-testid="historico-bandeira" className="mb-4 rounded border border-border bg-muted/40 p-3">
@@ -252,13 +121,14 @@ export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
                     verificadoEm: entry.verificadoEm || null,
                     revisarEm: entry.revisarEm || null,
                     publico: field.interno ? false : entry.publico,
+                    versao: entry.versao,
                   };
                 }),
               },
             });
           })}
         >
-          <div className="space-y-3">
+          <fieldset disabled={save.isPending} className="space-y-3">
             {groups.map(([group, fields], groupIndex) => {
               const verified = fields.filter(({ field, index }) => {
                 const value = watchedItems?.[index]?.valor;
@@ -266,7 +136,7 @@ export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
                   ? horarioParaApi(value) !== null
                   : field.tipo === "texto"
                     ? typeof value === "string" && value.trim().length > 0
-                    : value !== "nao_verificado";
+                    : typeof value === "string" && value !== "nao_verificado" && value.length > 0;
               }).length;
               return (
                 <details key={group} open={groupIndex === 0} className="overflow-hidden rounded border border-border bg-card">
@@ -318,7 +188,7 @@ export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
                             </label>
                             <label className="space-y-1">
                               <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground">Verificado em</span>
-                              <Input data-testid={`input-verificado-${field.chave}`} type="date" max={new Date().toISOString().slice(0, 10)} {...form.register(`itens.${index}.verificadoEm` as const)} />
+                              <Input data-testid={`input-verificado-${field.chave}`} type="date" max={hojeSaoPaulo()} {...form.register(`itens.${index}.verificadoEm` as const)} />
                             </label>
                             <label className="space-y-1">
                               <span className="font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground">Revisar até</span>
@@ -334,12 +204,17 @@ export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
                                 disabled={field.interno || (!canPublish && !formItem?.publico)}
                                 onCheckedChange={(checked) => form.setValue(`itens.${index}.publico`, checked, { shouldDirty: true })}
                               />
-                              Disponível no app
+                              Autorizar no app
                             </label>
                             {formItem?.publico && !canPublish && !field.interno && (
                               <span className="text-[10.5px] text-warn">Oculto até confirmar fonte, data e valor.</span>
                             )}
                           </div>
+                          {field.atualizadoEm && (
+                            <p data-testid={`text-responsavel-${field.chave}`} className="mt-2 break-words text-[10px] text-muted-foreground">
+                              Atualizado por {field.atualizadoPor ?? "Equipe ICL"} em {new Date(field.atualizadoEm).toLocaleString("pt-BR")}.
+                            </p>
+                          )}
                         </article>
                       );
                     })}
@@ -347,7 +222,7 @@ export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
                 </details>
               );
             })}
-          </div>
+          </fieldset>
 
           {hasInvalidSchedule && (
             <p data-testid="error-horarios-incompletos" className="flex items-start gap-2 rounded border border-warn/30 bg-warn/5 p-2.5 text-[11.5px] text-warn">
@@ -362,9 +237,15 @@ export function PostoAmenidadesEditor({ postoId }: { postoId: string }) {
           )}
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
             <p className="text-[10.5px] text-muted-foreground">Valores públicos vencidos ou sem verificação são ocultados automaticamente.</p>
-            <Btn data-testid="button-salvar-amenidades" disabled={save.isPending || hasInvalidSchedule}>
-              {save.isPending ? "Salvando…" : <><Check className="size-3.5" />Salvar informações</>}
-            </Btn>
+            <div className="flex flex-wrap gap-2">
+              <Btn data-testid="button-descartar-amenidades" type="button" variant="ghost" disabled={save.isPending} onClick={async () => {
+                const result = await q.refetch();
+                if (result.data) form.reset(paraFormulario(result.data.itens));
+              }}>Descartar alterações / recarregar</Btn>
+              <Btn data-testid="button-salvar-amenidades" disabled={!form.formState.isDirty || save.isPending || hasInvalidSchedule}>
+                {save.isPending ? "Salvando…" : <><Check className="size-3.5" />Salvar informações</>}
+              </Btn>
+            </div>
           </div>
         </form>
       </Form>
@@ -384,7 +265,7 @@ function HorarioEditor({
   const horario = valorHorarioFormulario(value);
   return (
     <fieldset className="mb-3">
-      <legend className="mb-1.5 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground">Horário semanal · fuso de Brasília</legend>
+      <legend className="mb-1.5 font-mono text-[9.5px] uppercase tracking-wider text-muted-foreground">Horário semanal · selecione o fuso local em Operação</legend>
       <div className="space-y-1.5">
         {DIAS.map(({ key, label }) => {
           const dia = horario[key];

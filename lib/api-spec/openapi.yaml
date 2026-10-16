@@ -541,6 +541,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Erro"
+        "409":
+          description: Dados alterados por outra sessao; recarregar antes de salvar
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erro"
   /postos-publicos/{id}/amenidades:
     get:
       operationId: getAmenidadesPublicasPosto
@@ -1540,10 +1546,10 @@ components:
           type: [string, "null"]
         verificadoEm:
           type: [string, "null"]
-          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
         revisarEm:
           type: [string, "null"]
-          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
         publico:
           type: boolean
         atualizadoPor:
@@ -1564,18 +1570,23 @@ components:
           maxLength: 180
         verificadoEm:
           type: [string, "null"]
-          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
         revisarEm:
           type: [string, "null"]
-          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
         publico:
           type: boolean
-      required: [chave, valor, fonte, verificadoEm, revisarEm, publico]
+        versao:
+          type: [string, "null"]
+          format: date-time
+          description: AtualizadoEm recebido na leitura; null para atributo ainda não salvo
+      required: [chave, valor, fonte, verificadoEm, revisarEm, publico, versao]
     PostoAmenidadesInput:
       type: object
       properties:
         itens:
           type: array
+          maxItems: 40
           items:
             $ref: "#/components/schemas/PostoAmenidadeInputItem"
       required: [itens]
@@ -1621,7 +1632,7 @@ components:
           $ref: "#/components/schemas/AmenidadeValor"
         verificadoEm:
           type: string
-          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
       required: [chave, rotulo, grupo, valor, verificadoEm]
     PostoAmenidadesPublicas:
       type: object

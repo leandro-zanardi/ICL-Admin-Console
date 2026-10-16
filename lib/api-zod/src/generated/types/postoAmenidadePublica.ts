@@ -12,5 +12,6 @@ export interface PostoAmenidadePublica {
   rotulo: string;
   grupo: string;
   valor: AmenidadeValor | null;
-  verificadoEm: Date;
+  /** @pattern ^\d{4}-\d{2}-\d{2}$ */
+  verificadoEm: string;
 }

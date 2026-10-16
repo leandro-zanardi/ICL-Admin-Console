@@ -1,2 +1,3 @@
 - [Backoffice vs app DB](backoffice-app-db.md) — prod app DB is older than app source; backoffice detects schema at runtime; never DDL on it
 - [Workspace TypeScript references](workspace-typescript-references.md) — rebuild stale referenced package declarations before diagnosing frontend type errors
+- [Cobertura e informações dos postos](postos-cobertura-visibilidade.md) — mapa não se limita a denúncias; status e amenidades têm divulgação opcional ao cliente

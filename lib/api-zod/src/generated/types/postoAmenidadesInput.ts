@@ -8,5 +8,6 @@
 import type { PostoAmenidadeInputItem } from './postoAmenidadeInputItem';
 
 export interface PostoAmenidadesInput {
+  /** @maxItems 40 */
   itens: PostoAmenidadeInputItem[];
 }

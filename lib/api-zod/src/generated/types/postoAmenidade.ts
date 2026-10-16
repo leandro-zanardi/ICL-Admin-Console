@@ -19,10 +19,16 @@ export interface PostoAmenidade {
   valor: AmenidadeValor | null;
   /** @nullable */
   fonte: string | null;
-  /** @nullable */
-  verificadoEm: Date | null;
-  /** @nullable */
-  revisarEm: Date | null;
+  /**
+     * @nullable
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
+  verificadoEm: string | null;
+  /**
+     * @nullable
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
+  revisarEm: string | null;
   publico: boolean;
   /** @nullable */
   atualizadoPor: string | null;

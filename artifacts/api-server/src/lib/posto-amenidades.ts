@@ -45,7 +45,20 @@ const STATUS_OPERACIONAL: OpcaoAmenidade[] = [
 
 export const CATALOGO_AMENIDADES: DefinicaoAmenidade[] = [
   { chave: "status_operacional", rotulo: "Situação operacional", grupo: "Operação", tipo: "status", opcoes: STATUS_OPERACIONAL, interno: false },
+  { chave: "fuso_horario", rotulo: "Fuso horário local", grupo: "Operação", tipo: "status", opcoes: [
+    { valor: "America/Sao_Paulo", rotulo: "Brasília — UTC−3" },
+    { valor: "America/Manaus", rotulo: "Manaus — UTC−4" },
+    { valor: "America/Rio_Branco", rotulo: "Rio Branco — UTC−5" },
+    { valor: "America/Noronha", rotulo: "Fernando de Noronha — UTC−2" },
+    { valor: "nao_verificado", rotulo: "Não verificado" },
+  ], interno: false },
   { chave: "horarios_funcionamento", rotulo: "Horário de funcionamento", grupo: "Operação", tipo: "horarios", opcoes: [], interno: false },
+  { chave: "situacao_cadastro_anp", rotulo: "Situação do cadastro na ANP", grupo: "Cadastro regulatório", tipo: "status", opcoes: [
+    { valor: "autorizado", rotulo: "Autorizado" },
+    { valor: "suspenso", rotulo: "Suspenso" },
+    { valor: "revogado", rotulo: "Revogado" },
+    { valor: "nao_verificado", rotulo: "Não verificado" },
+  ], interno: false },
   { chave: "bandeira_atual", rotulo: "Bandeira atual", grupo: "Bandeira", tipo: "texto", opcoes: [], interno: false },
   { chave: "gasolina", rotulo: "Gasolina", grupo: "Combustíveis e mobilidade", tipo: "boolean", opcoes: ESTADOS, interno: false },
   { chave: "etanol", rotulo: "Etanol", grupo: "Combustíveis e mobilidade", tipo: "boolean", opcoes: ESTADOS, interno: false },
@@ -73,7 +86,8 @@ export const CATALOGO_AMENIDADES: DefinicaoAmenidade[] = [
   { chave: "pix", rotulo: "Aceita Pix", grupo: "Pagamentos", tipo: "boolean", opcoes: ESTADOS, interno: false },
   { chave: "cartao", rotulo: "Aceita cartão", grupo: "Pagamentos", tipo: "boolean", opcoes: ESTADOS, interno: false },
   { chave: "convenio_frota", rotulo: "Convênio ou cartão de frota", grupo: "Pagamentos", tipo: "boolean", opcoes: ESTADOS, interno: false },
-  { chave: "bomba_criptografada", rotulo: "Verificação interna do sistema de segurança da bomba", grupo: "Segurança interna", tipo: "boolean", opcoes: ESTADOS, interno: true },
+  { chave: "equipamento_verificado_icl", rotulo: "Equipamento de abastecimento verificado pelo ICL", grupo: "Verificação ICL", tipo: "boolean", opcoes: ESTADOS, interno: false },
+  { chave: "bomba_criptografada", rotulo: "Bomba criptografada — verificação interna", grupo: "Segurança interna", tipo: "boolean", opcoes: ESTADOS, interno: true },
 ];
 
 const POR_CHAVE = new Map(CATALOGO_AMENIDADES.map((campo) => [campo.chave, campo]));
@@ -117,7 +131,7 @@ function horarioValido(value: unknown): value is HorariosFuncionamento {
     if (!item || typeof item !== "object" || Array.isArray(item)) return false;
     const h = item as Record<string, unknown>;
     if (typeof h.fechado !== "boolean" || typeof h.diaTodo !== "boolean") return false;
-    if (h.fechado) return h.abertura == null && h.fechamento == null;
+    if (h.fechado) return !h.diaTodo && h.abertura == null && h.fechamento == null;
     if (h.diaTodo) return h.abertura == null && h.fechamento == null;
     return (
       typeof h.abertura === "string" &&
@@ -134,8 +148,21 @@ export function validarValorAmenidade(chave: string, valor: unknown): valor is V
   if (!campo) return false;
   if (campo.tipo === "horarios") return valor === null || horarioValido(valor);
   if (campo.tipo === "texto") return typeof valor === "string" && valor.length <= 120;
-  if (campo.tipo === "boolean") return ESTADOS.some((opcao) => opcao.valor === valor);
-  return STATUS_OPERACIONAL.some((opcao) => opcao.valor === valor);
+  return campo.opcoes.some((opcao) => opcao.valor === valor);
+}
+
+/** Retorna apenas o formato conhecido; chaves arbitrárias nunca seguem para o app. */
+export function normalizarValorAmenidade(chave: string, valor: ValorAmenidade): ValorAmenidade {
+  const campo = POR_CHAVE.get(chave);
+  if (campo?.tipo === "horarios" && horarioValido(valor)) {
+    return Object.fromEntries(DIAS.map((dia) => [dia, {
+      fechado: valor[dia].fechado,
+      diaTodo: valor[dia].diaTodo,
+      abertura: valor[dia].fechado || valor[dia].diaTodo ? null : valor[dia].abertura,
+      fechamento: valor[dia].fechado || valor[dia].diaTodo ? null : valor[dia].fechamento,
+    }]));
+  }
+  return typeof valor === "string" ? valor.trim() : valor;
 }
 
 export function valorPadraoAmenidade(campo: DefinicaoAmenidade): ValorAmenidade {
@@ -152,14 +179,15 @@ export function abertoAgora(
   horarios: HorariosFuncionamento | null,
   estado: string | null,
   instante = new Date(),
+  fuso: string | null = null,
 ): boolean | null {
   if (estado && ["fechado_temporariamente", "encerrado_permanentemente", "suspenso"].includes(estado)) {
     return false;
   }
-  if (!horarios) return null;
+  if (!horarios || !fuso || !validarValorAmenidade("fuso_horario", fuso) || fuso === "nao_verificado") return null;
 
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Sao_Paulo",
+    timeZone: fuso,
     weekday: "short",
     hour: "2-digit",
     minute: "2-digit",
@@ -196,13 +224,54 @@ function tempoEmMinutos(tempo: string | null): number | null {
   return horas * 60 + minutos;
 }
 
-export function metadadosPublicosValidos(item: PostoAtributo, hoje = hojeEmSaoPaulo()): boolean {
-  const campo = POR_CHAVE.get(item.chave);
-  if (!campo || campo.interno || !item.publico || !item.fonte?.trim() || !item.verificadoEm) return false;
+export function metadadosConfirmadosValidos(item: PostoAtributo, hoje = hojeEmSaoPaulo()): boolean {
+  if (!item.fonte?.trim() || !item.verificadoEm) return false;
+  if (!dataCalendarioValida(item.verificadoEm) || item.verificadoEm > hoje) return false;
   if (item.revisarEm && item.revisarEm < hoje) return false;
+  if (item.revisarEm && (!dataCalendarioValida(item.revisarEm) || item.revisarEm < item.verificadoEm)) return false;
   if (item.valor === null || item.valor === "") return false;
   if (item.valor === "nao_verificado") return false;
   return true;
+}
+
+export function metadadosPublicosValidos(item: PostoAtributo, hoje = hojeEmSaoPaulo()): boolean {
+  const campo = POR_CHAVE.get(item.chave);
+  return Boolean(campo && !campo.interno && item.publico && metadadosConfirmadosValidos(item, hoje));
+}
+
+export function dataCalendarioValida(valor: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(valor)) return false;
+  const data = new Date(`${valor}T00:00:00.000Z`);
+  return !Number.isNaN(data.getTime()) && data.toISOString().slice(0, 10) === valor;
+}
+
+/** Projeção positiva: nunca inclui fonte, autor, histórico ou campos internos. */
+export function projetarAmenidadesPublicas(rows: PostoAtributo[], instante = new Date()) {
+  const hoje = hojeEmSaoPaulo(instante);
+  const itens = rows
+    .filter((item) => metadadosPublicosValidos(item, hoje) && validarValorAmenidade(item.chave, item.valor))
+    .map((item) => {
+      const campo = POR_CHAVE.get(item.chave)!;
+      return {
+        chave: campo.chave,
+        rotulo: campo.rotulo,
+        grupo: campo.grupo,
+        valor: normalizarValorAmenidade(item.chave, item.valor),
+        verificadoEm: item.verificadoEm!,
+      };
+    });
+  const status = itens.find((item) => item.chave === "status_operacional")?.valor;
+  const horario = itens.find((item) => item.chave === "horarios_funcionamento")?.valor ?? null;
+  const fusoValor = itens.find((item) => item.chave === "fuso_horario")?.valor;
+  const fuso = typeof fusoValor === "string" ? fusoValor : null;
+  const hours = horarioPublicavel(horario) ? horario : null;
+  const estado = typeof status === "string" ? status : null;
+  return {
+    itens,
+    abertoAgora: estado && ["fechado_temporariamente", "encerrado_permanentemente", "suspenso"].includes(estado)
+      ? false
+      : hours ? abertoAgora(hours, estado, instante, fuso) : null,
+  };
 }
 
 export function hojeEmSaoPaulo(instante = new Date()): string {

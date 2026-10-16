@@ -1234,6 +1234,10 @@ export const GetPostoAmenidadesParams = zod.object({
   "id": zod.coerce.string()
 })
 
+export const getPostoAmenidadesResponseItensItemVerificadoEmRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+export const getPostoAmenidadesResponseItensItemRevisarEmRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+
+
 export const GetPostoAmenidadesResponse = zod.object({
   "postoId": zod.string(),
   "abertoAgora": zod.boolean().nullable(),
@@ -1249,8 +1253,8 @@ export const GetPostoAmenidadesResponse = zod.object({
   "interno": zod.boolean(),
   "valor": zod.union([zod.string(),zod.record(zod.string(), zod.unknown()),zod.null()]),
   "fonte": zod.string().nullable(),
-  "verificadoEm": zod.coerce.date().nullable(),
-  "revisarEm": zod.coerce.date().nullable(),
+  "verificadoEm": zod.string().regex(getPostoAmenidadesResponseItensItemVerificadoEmRegExp).nullable(),
+  "revisarEm": zod.string().regex(getPostoAmenidadesResponseItensItemRevisarEmRegExp).nullable(),
   "publico": zod.boolean(),
   "atualizadoPor": zod.string().nullable(),
   "atualizadoEm": zod.coerce.date().nullable()
@@ -1273,6 +1277,10 @@ export const AtualizarPostoAmenidadesParams = zod.object({
 
 export const atualizarPostoAmenidadesBodyItensItemFonteMax = 180;
 
+export const atualizarPostoAmenidadesBodyItensItemVerificadoEmRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+export const atualizarPostoAmenidadesBodyItensItemRevisarEmRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+export const atualizarPostoAmenidadesBodyItensMax = 40;
+
 
 
 export const AtualizarPostoAmenidadesBody = zod.object({
@@ -1280,11 +1288,16 @@ export const AtualizarPostoAmenidadesBody = zod.object({
   "chave": zod.string(),
   "valor": zod.union([zod.string(),zod.record(zod.string(), zod.unknown()),zod.null()]),
   "fonte": zod.string().max(atualizarPostoAmenidadesBodyItensItemFonteMax).nullable(),
-  "verificadoEm": zod.coerce.date().nullable(),
-  "revisarEm": zod.coerce.date().nullable(),
-  "publico": zod.boolean()
-}))
+  "verificadoEm": zod.string().regex(atualizarPostoAmenidadesBodyItensItemVerificadoEmRegExp).nullable(),
+  "revisarEm": zod.string().regex(atualizarPostoAmenidadesBodyItensItemRevisarEmRegExp).nullable(),
+  "publico": zod.boolean(),
+  "versao": zod.coerce.date().nullable().describe('AtualizadoEm recebido na leitura; null para atributo ainda não salvo')
+})).max(atualizarPostoAmenidadesBodyItensMax)
 })
+
+export const atualizarPostoAmenidadesResponseItensItemVerificadoEmRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+export const atualizarPostoAmenidadesResponseItensItemRevisarEmRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+
 
 export const AtualizarPostoAmenidadesResponse = zod.object({
   "postoId": zod.string(),
@@ -1301,8 +1314,8 @@ export const AtualizarPostoAmenidadesResponse = zod.object({
   "interno": zod.boolean(),
   "valor": zod.union([zod.string(),zod.record(zod.string(), zod.unknown()),zod.null()]),
   "fonte": zod.string().nullable(),
-  "verificadoEm": zod.coerce.date().nullable(),
-  "revisarEm": zod.coerce.date().nullable(),
+  "verificadoEm": zod.string().regex(atualizarPostoAmenidadesResponseItensItemVerificadoEmRegExp).nullable(),
+  "revisarEm": zod.string().regex(atualizarPostoAmenidadesResponseItensItemRevisarEmRegExp).nullable(),
   "publico": zod.boolean(),
   "atualizadoPor": zod.string().nullable(),
   "atualizadoEm": zod.coerce.date().nullable()
@@ -1323,6 +1336,9 @@ export const GetAmenidadesPublicasPostoParams = zod.object({
   "id": zod.coerce.string()
 })
 
+export const getAmenidadesPublicasPostoResponseItensItemVerificadoEmRegExp = new RegExp('^\\d{4}-\\d{2}-\\d{2}$');
+
+
 export const GetAmenidadesPublicasPostoResponse = zod.object({
   "postoId": zod.string(),
   "abertoAgora": zod.boolean().nullable(),
@@ -1331,7 +1347,7 @@ export const GetAmenidadesPublicasPostoResponse = zod.object({
   "rotulo": zod.string(),
   "grupo": zod.string(),
   "valor": zod.union([zod.string(),zod.record(zod.string(), zod.unknown()),zod.null()]),
-  "verificadoEm": zod.coerce.date()
+  "verificadoEm": zod.string().regex(getAmenidadesPublicasPostoResponseItensItemVerificadoEmRegExp)
 }))
 })
 

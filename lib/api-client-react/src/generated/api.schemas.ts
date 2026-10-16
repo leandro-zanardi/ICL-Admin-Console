@@ -671,9 +671,15 @@ export interface PostoAmenidade {
   valor: AmenidadeValor | null;
   /** @nullable */
   fonte: string | null;
-  /** @nullable */
+  /**
+     * @nullable
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
   verificadoEm: string | null;
-  /** @nullable */
+  /**
+     * @nullable
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
   revisarEm: string | null;
   publico: boolean;
   /** @nullable */
@@ -690,14 +696,26 @@ export interface PostoAmenidadeInputItem {
      * @nullable
      */
   fonte: string | null;
-  /** @nullable */
+  /**
+     * @nullable
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
   verificadoEm: string | null;
-  /** @nullable */
+  /**
+     * @nullable
+     * @pattern ^\d{4}-\d{2}-\d{2}$
+     */
   revisarEm: string | null;
   publico: boolean;
+  /**
+     * AtualizadoEm recebido na leitura; null para atributo ainda não salvo
+     * @nullable
+     */
+  versao: string | null;
 }
 
 export interface PostoAmenidadesInput {
+  /** @maxItems 40 */
   itens: PostoAmenidadeInputItem[];
 }
 
@@ -723,6 +741,7 @@ export interface PostoAmenidadePublica {
   rotulo: string;
   grupo: string;
   valor: AmenidadeValor | null;
+  /** @pattern ^\d{4}-\d{2}-\d{2}$ */
   verificadoEm: string;
 }
 
