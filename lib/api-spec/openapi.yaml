@@ -726,7 +726,11 @@ components:
           type: integer
         totalCheckins:
           type: integer
-      required: [pins, calor, totalDenuncias, totalCheckins]
+        totalPostos:
+          type: integer
+        postosSemCoordenadas:
+          type: integer
+      required: [pins, calor, totalDenuncias, totalCheckins, totalPostos, postosSemCoordenadas]
     DenunciaResumo:
       type: object
       properties:

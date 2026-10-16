@@ -32,20 +32,25 @@ export default function Mapa() {
         <div className="pointer-events-auto flex flex-wrap items-end gap-2.5 self-start rounded-md border border-card-border bg-card/95 p-3 shadow-lg backdrop-blur">
           <div className="mr-2">
             <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"><span className="size-2 bg-primary" />01 / Mapa</div>
-            <h1 className="font-display text-xl font-bold leading-tight">Calor de denúncias</h1>
+            <h1 className="font-display text-xl font-bold leading-tight">Postos cadastrados e denúncias</h1>
           </div>
           <SelectBox testId="select-dias" label="Período" value={dias} onChange={setDias} options={DIAS} all={null} />
           <SelectBox testId="select-categoria" label="Categoria" value={categoria} onChange={setCategoria} options={opts(CATEGORIAS)} all="Todas" />
           <SelectBox testId="select-status" label="Status" value={status} onChange={setStatus} options={opts(STATUS)} />
         </div>
         <div className="pointer-events-auto flex gap-2 self-start">
-          {[["Denúncias", q.data?.totalDenuncias], ["Check-ins", q.data?.totalCheckins], ["Postos", q.data?.pins.length]].map(([k, v]) => (
+          {[["Denúncias", q.data?.totalDenuncias], ["Check-ins", q.data?.totalCheckins], ["Postos cadastrados", q.data?.totalPostos]].map(([k, v]) => (
             <div key={k as string} className="rounded border border-sidebar-border bg-sidebar/95 px-3 py-1.5 text-sidebar-foreground shadow">
               <div className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-sidebar-foreground/50">{k}</div>
               <div data-testid={`stat-mapa-${k}`} className="font-display text-lg font-bold leading-none tnum">{q.isLoading ? "..." : fmtNum(v as number | undefined)}</div>
             </div>
           ))}
         </div>
+        {!!q.data?.postosSemCoordenadas && (
+          <div className="pointer-events-auto self-start rounded border border-amber-500/40 bg-card/95 px-3 py-1.5 text-[11px] text-foreground shadow">
+            {fmtNum(q.data.postosSemCoordenadas)} posto(s) sem latitude/longitude não podem ser posicionados no mapa.
+          </div>
+        )}
       </div>
 
       <div className="pointer-events-none absolute bottom-4 left-4 z-[500] hidden rounded border border-card-border bg-card/95 px-3 py-2 text-[11px] shadow md:block">
@@ -63,8 +68,12 @@ export default function Mapa() {
       {!q.isLoading && !q.isError && pins.length === 0 && (
         <div className="pointer-events-none absolute inset-0 z-[400] grid place-items-center">
           <div className="rounded-md border border-dashed border-foreground/30 bg-card/95 px-5 py-4 text-center shadow">
-            <p className="font-display font-semibold">Nenhum posto com atividade no período</p>
-            <p className="text-[12px] text-muted-foreground">Amplie a janela ou remova filtros.</p>
+            <p className="font-display font-semibold">
+              {q.data?.totalPostos ? "Os postos cadastrados estão sem coordenadas" : "Nenhum posto cadastrado disponível"}
+            </p>
+            <p className="text-[12px] text-muted-foreground">
+              {q.data?.totalPostos ? "Adicione latitude e longitude ao cadastro para posicioná-los no mapa." : "Não há postos para exibir neste escopo."}
+            </p>
           </div>
         </div>
       )}

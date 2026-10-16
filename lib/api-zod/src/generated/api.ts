@@ -66,7 +66,9 @@ export const GetMapaResponse = zod.object({
   "peso": zod.number()
 })),
   "totalDenuncias": zod.number().int(),
-  "totalCheckins": zod.number().int()
+  "totalCheckins": zod.number().int(),
+  "totalPostos": zod.number().int(),
+  "postosSemCoordenadas": zod.number().int()
 })
 
 

@@ -14,6 +14,9 @@ router.get("/mapa", async (req, res): Promise<void> => {
   const snap = await getSnapshot();
   const permitidos = postosPermitidos(sessao, snap);
   const desde = Date.now() - q.dias * 24 * 3600 * 1000;
+  const postosVisiveis = [...snap.postos.values()].filter(
+    (posto) => permitidos === null || permitidos.has(posto.id),
+  );
 
   const denuncias = snap.denuncias.filter(
     (d) =>
@@ -35,6 +38,10 @@ router.get("/mapa", async (req, res): Promise<void> => {
     }
     return p;
   };
+  // Os marcadores representam o cadastro completo de postos, não apenas os
+  // que tiveram atividade no período. O calor continua representando denúncias.
+  for (const posto of postosVisiveis) pin(posto.id);
+
   const calor: { lat: number; lng: number; peso: number }[] = [];
   for (const d of denuncias) {
     const posto = d.postoId ? snap.postos.get(d.postoId) : undefined;
@@ -49,7 +56,6 @@ router.get("/mapa", async (req, res): Promise<void> => {
     if (posto?.lat != null && posto?.lng != null) calor.push({ lat: posto.lat, lng: posto.lng, peso: 1 });
   }
   for (const c of checkins) pin(c.postoId).checkins++;
-  if (permitidos !== null) for (const id of permitidos) pin(id);
 
   const lista = [...pins.entries()].flatMap(([id, p]) => {
     const posto = snap.postos.get(id);
@@ -74,6 +80,8 @@ router.get("/mapa", async (req, res): Promise<void> => {
       calor,
       totalDenuncias: denuncias.length,
       totalCheckins: checkins.length,
+      totalPostos: postosVisiveis.length,
+      postosSemCoordenadas: postosVisiveis.filter((posto) => posto.lat == null || posto.lng == null).length,
     }),
   );
 });

@@ -13,4 +13,6 @@ export interface Mapa {
   calor: PontoCalor[];
   totalDenuncias: number;
   totalCheckins: number;
+  totalPostos: number;
+  postosSemCoordenadas: number;
 }
