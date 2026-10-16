@@ -5,8 +5,11 @@ import { Panel, Field, Kpi, SkeletonRows, ErrorState } from "@/components/kit";
 import { SeloIcl } from "@/components/badges";
 import { DenunciaRows, CheckinRows } from "@/components/lists";
 import { cnpjRaiz, fmtNum } from "@/lib/format";
+import { PostoAmenidadesEditor } from "@/components/posto-amenidades-editor";
+import { useSessao } from "@/lib/sessao";
 
 export default function PostoDetalhe() {
+  const { isMaster } = useSessao();
   const { id = "" } = useParams<{ id: string }>();
   const q = useGetPosto(id, { query: { enabled: !!id, queryKey: getGetPostoQueryKey(id) } });
   if (q.isLoading) return <div className="p-7"><SkeletonRows rows={10} /></div>;
@@ -61,6 +64,7 @@ export default function PostoDetalhe() {
           <Panel title={`Check-ins · ${p.checkinsLista.length}`}><div className="overflow-x-auto"><CheckinRows items={p.checkinsLista} /></div></Panel>
         </div>
       </div>
+      {isMaster && <div className="px-5 pb-6 md:px-7"><PostoAmenidadesEditor postoId={p.id} /></div>}
     </div>
   );
 }

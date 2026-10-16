@@ -502,6 +502,59 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Erro"
+  /postos/{id}/amenidades:
+    get:
+      operationId: getPostoAmenidades
+      tags: [postos]
+      summary: Catalogo interno de status e amenidades do posto (master)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Catalogo do posto
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostoAmenidades"
+    put:
+      operationId: atualizarPostoAmenidades
+      tags: [postos]
+      summary: Atualiza status e amenidades do posto (master)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostoAmenidadesInput"
+      responses:
+        "200":
+          description: Catalogo atualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostoAmenidades"
+        "400":
+          description: Dados invalidos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Erro"
+  /postos-publicos/{id}/amenidades:
+    get:
+      operationId: getAmenidadesPublicasPosto
+      tags: [postos]
+      summary: Amenidades autorizadas para exibicao publica
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Informacoes publicas do posto
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostoAmenidadesPublicas"
   /anp-sincronizacoes:
     get:
       operationId: listSincronizacoesAnp
@@ -1449,6 +1502,139 @@ components:
               items:
                 $ref: "#/components/schemas/CheckinInfo"
           required: [anp, denunciasLista, checkinsLista]
+    AmenidadeOpcao:
+      type: object
+      properties:
+        valor:
+          type: string
+        rotulo:
+          type: string
+      required: [valor, rotulo]
+    AmenidadeValor:
+      anyOf:
+        - type: string
+        - type: object
+          additionalProperties: true
+        - type: "null"
+    PostoAmenidade:
+      type: object
+      properties:
+        chave:
+          type: string
+        rotulo:
+          type: string
+        grupo:
+          type: string
+        tipo:
+          type: string
+          enum: [status, boolean, texto, horarios]
+        opcoes:
+          type: array
+          items:
+            $ref: "#/components/schemas/AmenidadeOpcao"
+        interno:
+          type: boolean
+        valor:
+          $ref: "#/components/schemas/AmenidadeValor"
+        fonte:
+          type: [string, "null"]
+        verificadoEm:
+          type: [string, "null"]
+          format: date
+        revisarEm:
+          type: [string, "null"]
+          format: date
+        publico:
+          type: boolean
+        atualizadoPor:
+          type: [string, "null"]
+        atualizadoEm:
+          type: [string, "null"]
+          format: date-time
+      required: [chave, rotulo, grupo, tipo, opcoes, interno, valor, fonte, verificadoEm, revisarEm, publico, atualizadoPor, atualizadoEm]
+    PostoAmenidadeInputItem:
+      type: object
+      properties:
+        chave:
+          type: string
+        valor:
+          $ref: "#/components/schemas/AmenidadeValor"
+        fonte:
+          type: [string, "null"]
+          maxLength: 180
+        verificadoEm:
+          type: [string, "null"]
+          format: date
+        revisarEm:
+          type: [string, "null"]
+          format: date
+        publico:
+          type: boolean
+      required: [chave, valor, fonte, verificadoEm, revisarEm, publico]
+    PostoAmenidadesInput:
+      type: object
+      properties:
+        itens:
+          type: array
+          items:
+            $ref: "#/components/schemas/PostoAmenidadeInputItem"
+      required: [itens]
+    HistoricoBandeira:
+      type: object
+      properties:
+        anterior:
+          type: [string, "null"]
+        atual:
+          type: [string, "null"]
+        alteradoEm:
+          type: string
+          format: date-time
+        autor:
+          type: string
+      required: [anterior, atual, alteradoEm, autor]
+    PostoAmenidades:
+      type: object
+      properties:
+        postoId:
+          type: string
+        abertoAgora:
+          type: [boolean, "null"]
+        itens:
+          type: array
+          items:
+            $ref: "#/components/schemas/PostoAmenidade"
+        historicoBandeira:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoricoBandeira"
+      required: [postoId, abertoAgora, itens, historicoBandeira]
+    PostoAmenidadePublica:
+      type: object
+      properties:
+        chave:
+          type: string
+        rotulo:
+          type: string
+        grupo:
+          type: string
+        valor:
+          $ref: "#/components/schemas/AmenidadeValor"
+        verificadoEm:
+          type: string
+          format: date
+      required: [chave, rotulo, grupo, valor, verificadoEm]
+    PostoAmenidadesPublicas:
+      type: object
+      properties:
+        postoId:
+          type: string
+        abertoAgora:
+          type: [boolean, "null"]
+        itens:
+          type: array
+          items:
+            $ref: "#/components/schemas/PostoAmenidadePublica"
+      required: [postoId, abertoAgora, itens]
     SincronizacaoAnp:
       type: object
       properties:

@@ -47,6 +47,9 @@ import type {
   NovoAcesso,
   NovoAndamento,
   Painel,
+  PostoAmenidades,
+  PostoAmenidadesInput,
+  PostoAmenidadesPublicas,
   PostoDetalhe,
   PostoPagina,
   PrazoDenuncia,
@@ -2211,6 +2214,249 @@ export function useGetPosto<TData = Awaited<ReturnType<typeof getPosto>>, TError
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetPostoQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetPostoAmenidadesUrl = (id: string,) => {
+
+
+
+
+  return `/api/postos/${id}/amenidades`
+}
+
+/**
+ * @summary Catalogo interno de status e amenidades do posto (master)
+ */
+export const getPostoAmenidades = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<PostoAmenidades> => {
+
+  return customFetch<PostoAmenidades>(getGetPostoAmenidadesUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetPostoAmenidadesQueryKey = (id: string,) => {
+    return [
+    `/api/postos/${id}/amenidades`
+    ] as const;
+    }
+
+
+export const getGetPostoAmenidadesQueryOptions = <TData = Awaited<ReturnType<typeof getPostoAmenidades>>, TError = ErrorType<unknown>>(id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getPostoAmenidades>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetPostoAmenidadesQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getPostoAmenidades>>> = ({ signal }) => getPostoAmenidades(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getPostoAmenidades>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetPostoAmenidadesQueryResult = NonNullable<Awaited<ReturnType<typeof getPostoAmenidades>>>
+export type GetPostoAmenidadesQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Catalogo interno de status e amenidades do posto (master)
+ */
+
+export function useGetPostoAmenidades<TData = Awaited<ReturnType<typeof getPostoAmenidades>>, TError = ErrorType<unknown>>(
+ id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getPostoAmenidades>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetPostoAmenidadesQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getAtualizarPostoAmenidadesUrl = (id: string,) => {
+
+
+
+
+  return `/api/postos/${id}/amenidades`
+}
+
+/**
+ * @summary Atualiza status e amenidades do posto (master)
+ */
+export const atualizarPostoAmenidades = async (id: string,
+    postoAmenidadesInput: PostoAmenidadesInput, options?: Parameters<typeof customFetch>[1]): Promise<PostoAmenidades> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+return customFetch<PostoAmenidades>(getAtualizarPostoAmenidadesUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(postoAmenidadesInput)
+  }
+);}
+
+
+
+
+
+export const getAtualizarPostoAmenidadesMutationKey = () => ['atualizarPostoAmenidades'] as const;
+
+export const getAtualizarPostoAmenidadesMutationOptions = <TError = ErrorType<Erro>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof atualizarPostoAmenidades>>, TError,AtualizarPostoAmenidadesMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof atualizarPostoAmenidades>>, TError,AtualizarPostoAmenidadesMutationVariables, TContext> => {
+
+const mutationKey = getAtualizarPostoAmenidadesMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof atualizarPostoAmenidades>>, AtualizarPostoAmenidadesMutationVariables> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  atualizarPostoAmenidades(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AtualizarPostoAmenidadesMutationResult = NonNullable<Awaited<ReturnType<typeof atualizarPostoAmenidades>>>
+    export type AtualizarPostoAmenidadesMutationBody = BodyType<PostoAmenidadesInput>
+    export type AtualizarPostoAmenidadesMutationError = ErrorType<Erro>
+    export type AtualizarPostoAmenidadesMutationVariables = {id: string;data: BodyType<PostoAmenidadesInput>}
+
+    /**
+ * @summary Atualiza status e amenidades do posto (master)
+ */
+export const useAtualizarPostoAmenidades = <TError = ErrorType<Erro>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof atualizarPostoAmenidades>>, TError,AtualizarPostoAmenidadesMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof atualizarPostoAmenidades>>,
+        TError,
+        AtualizarPostoAmenidadesMutationVariables,
+        TContext
+      > => {
+      return useMutation(getAtualizarPostoAmenidadesMutationOptions(options));
+    }
+
+export const getGetAmenidadesPublicasPostoUrl = (id: string,) => {
+
+
+
+
+  return `/api/postos-publicos/${id}/amenidades`
+}
+
+/**
+ * @summary Amenidades autorizadas para exibicao publica
+ */
+export const getAmenidadesPublicasPosto = async (id: string, options?: Parameters<typeof customFetch>[1]): Promise<PostoAmenidadesPublicas> => {
+
+  return customFetch<PostoAmenidadesPublicas>(getGetAmenidadesPublicasPostoUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetAmenidadesPublicasPostoQueryKey = (id: string,) => {
+    return [
+    `/api/postos-publicos/${id}/amenidades`
+    ] as const;
+    }
+
+
+export const getGetAmenidadesPublicasPostoQueryOptions = <TData = Awaited<ReturnType<typeof getAmenidadesPublicasPosto>>, TError = ErrorType<unknown>>(id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAmenidadesPublicasPosto>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetAmenidadesPublicasPostoQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getAmenidadesPublicasPosto>>> = ({ signal }) => getAmenidadesPublicasPosto(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getAmenidadesPublicasPosto>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetAmenidadesPublicasPostoQueryResult = NonNullable<Awaited<ReturnType<typeof getAmenidadesPublicasPosto>>>
+export type GetAmenidadesPublicasPostoQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Amenidades autorizadas para exibicao publica
+ */
+
+export function useGetAmenidadesPublicasPosto<TData = Awaited<ReturnType<typeof getAmenidadesPublicasPosto>>, TError = ErrorType<unknown>>(
+ id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getAmenidadesPublicasPosto>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetAmenidadesPublicasPostoQueryOptions(id,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

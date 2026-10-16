@@ -644,6 +644,95 @@ export type PostoDetalhe = PostoResumo & ({
   checkinsLista: CheckinInfo[];
 });
 
+export interface AmenidadeOpcao {
+  valor: string;
+  rotulo: string;
+}
+
+export type AmenidadeValor = string | { [key: string]: unknown } | null;
+
+export type PostoAmenidadeTipo = typeof PostoAmenidadeTipo[keyof typeof PostoAmenidadeTipo];
+
+
+export const PostoAmenidadeTipo = {
+  status: 'status',
+  boolean: 'boolean',
+  texto: 'texto',
+  horarios: 'horarios',
+} as const;
+
+export interface PostoAmenidade {
+  chave: string;
+  rotulo: string;
+  grupo: string;
+  tipo: PostoAmenidadeTipo;
+  opcoes: AmenidadeOpcao[];
+  interno: boolean;
+  valor: AmenidadeValor | null;
+  /** @nullable */
+  fonte: string | null;
+  /** @nullable */
+  verificadoEm: string | null;
+  /** @nullable */
+  revisarEm: string | null;
+  publico: boolean;
+  /** @nullable */
+  atualizadoPor: string | null;
+  /** @nullable */
+  atualizadoEm: string | null;
+}
+
+export interface PostoAmenidadeInputItem {
+  chave: string;
+  valor: AmenidadeValor | null;
+  /**
+     * @maxLength 180
+     * @nullable
+     */
+  fonte: string | null;
+  /** @nullable */
+  verificadoEm: string | null;
+  /** @nullable */
+  revisarEm: string | null;
+  publico: boolean;
+}
+
+export interface PostoAmenidadesInput {
+  itens: PostoAmenidadeInputItem[];
+}
+
+export interface HistoricoBandeira {
+  /** @nullable */
+  anterior: string | null;
+  /** @nullable */
+  atual: string | null;
+  alteradoEm: string;
+  autor: string;
+}
+
+export interface PostoAmenidades {
+  postoId: string;
+  /** @nullable */
+  abertoAgora: boolean | null;
+  itens: PostoAmenidade[];
+  historicoBandeira: HistoricoBandeira[];
+}
+
+export interface PostoAmenidadePublica {
+  chave: string;
+  rotulo: string;
+  grupo: string;
+  valor: AmenidadeValor | null;
+  verificadoEm: string;
+}
+
+export interface PostoAmenidadesPublicas {
+  postoId: string;
+  /** @nullable */
+  abertoAgora: boolean | null;
+  itens: PostoAmenidadePublica[];
+}
+
 export interface SincronizacaoAnp {
   id: string;
   status: string;

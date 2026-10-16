@@ -10,12 +10,15 @@ import painelRouter from "./painel";
 import postosRouter from "./postos";
 import anpRouter from "./anp";
 import recompensasRouter from "./recompensas";
+import postoAmenidadesRouter from "./posto-amenidades";
+import postosPublicosRouter from "./postos-publicos";
 import { exigirAcesso } from "../middlewares/acesso";
 
 const router: IRouter = Router();
 
 // Publico
 router.use(healthRouter);
+router.use(postosPublicosRouter);
 
 // Tudo abaixo exige login e cadastro de acesso
 router.use(exigirAcesso);
@@ -26,6 +29,7 @@ router.use(antifraudeRouter);
 router.use(usuariosRouter);
 router.use(acessosRouter);
 router.use(painelRouter);
+router.use(postoAmenidadesRouter);
 router.use(postosRouter);
 router.use(anpRouter);
 router.use(recompensasRouter);

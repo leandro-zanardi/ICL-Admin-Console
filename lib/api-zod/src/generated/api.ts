@@ -1228,6 +1228,115 @@ export const GetPostoResponse = zod.object({
 
 
 /**
+ * @summary Catalogo interno de status e amenidades do posto (master)
+ */
+export const GetPostoAmenidadesParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const GetPostoAmenidadesResponse = zod.object({
+  "postoId": zod.string(),
+  "abertoAgora": zod.boolean().nullable(),
+  "itens": zod.array(zod.object({
+  "chave": zod.string(),
+  "rotulo": zod.string(),
+  "grupo": zod.string(),
+  "tipo": zod.enum(['status', 'boolean', 'texto', 'horarios']),
+  "opcoes": zod.array(zod.object({
+  "valor": zod.string(),
+  "rotulo": zod.string()
+})),
+  "interno": zod.boolean(),
+  "valor": zod.union([zod.string(),zod.record(zod.string(), zod.unknown()),zod.null()]),
+  "fonte": zod.string().nullable(),
+  "verificadoEm": zod.coerce.date().nullable(),
+  "revisarEm": zod.coerce.date().nullable(),
+  "publico": zod.boolean(),
+  "atualizadoPor": zod.string().nullable(),
+  "atualizadoEm": zod.coerce.date().nullable()
+})),
+  "historicoBandeira": zod.array(zod.object({
+  "anterior": zod.string().nullable(),
+  "atual": zod.string().nullable(),
+  "alteradoEm": zod.coerce.date(),
+  "autor": zod.string()
+}))
+})
+
+
+/**
+ * @summary Atualiza status e amenidades do posto (master)
+ */
+export const AtualizarPostoAmenidadesParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const atualizarPostoAmenidadesBodyItensItemFonteMax = 180;
+
+
+
+export const AtualizarPostoAmenidadesBody = zod.object({
+  "itens": zod.array(zod.object({
+  "chave": zod.string(),
+  "valor": zod.union([zod.string(),zod.record(zod.string(), zod.unknown()),zod.null()]),
+  "fonte": zod.string().max(atualizarPostoAmenidadesBodyItensItemFonteMax).nullable(),
+  "verificadoEm": zod.coerce.date().nullable(),
+  "revisarEm": zod.coerce.date().nullable(),
+  "publico": zod.boolean()
+}))
+})
+
+export const AtualizarPostoAmenidadesResponse = zod.object({
+  "postoId": zod.string(),
+  "abertoAgora": zod.boolean().nullable(),
+  "itens": zod.array(zod.object({
+  "chave": zod.string(),
+  "rotulo": zod.string(),
+  "grupo": zod.string(),
+  "tipo": zod.enum(['status', 'boolean', 'texto', 'horarios']),
+  "opcoes": zod.array(zod.object({
+  "valor": zod.string(),
+  "rotulo": zod.string()
+})),
+  "interno": zod.boolean(),
+  "valor": zod.union([zod.string(),zod.record(zod.string(), zod.unknown()),zod.null()]),
+  "fonte": zod.string().nullable(),
+  "verificadoEm": zod.coerce.date().nullable(),
+  "revisarEm": zod.coerce.date().nullable(),
+  "publico": zod.boolean(),
+  "atualizadoPor": zod.string().nullable(),
+  "atualizadoEm": zod.coerce.date().nullable()
+})),
+  "historicoBandeira": zod.array(zod.object({
+  "anterior": zod.string().nullable(),
+  "atual": zod.string().nullable(),
+  "alteradoEm": zod.coerce.date(),
+  "autor": zod.string()
+}))
+})
+
+
+/**
+ * @summary Amenidades autorizadas para exibicao publica
+ */
+export const GetAmenidadesPublicasPostoParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const GetAmenidadesPublicasPostoResponse = zod.object({
+  "postoId": zod.string(),
+  "abertoAgora": zod.boolean().nullable(),
+  "itens": zod.array(zod.object({
+  "chave": zod.string(),
+  "rotulo": zod.string(),
+  "grupo": zod.string(),
+  "valor": zod.union([zod.string(),zod.record(zod.string(), zod.unknown()),zod.null()]),
+  "verificadoEm": zod.coerce.date()
+}))
+})
+
+
+/**
  * @summary Historico de sincronizacao ANP (master)
  */
 export const listSincronizacoesAnpQueryPageDefault = 1;

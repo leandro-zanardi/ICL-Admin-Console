@@ -3,3 +3,4 @@ export * from "./denunciaGestao";
 export * from "./denunciaScores";
 export * from "./andamentos";
 export * from "./configuracoes";
+export * from "./postoAtributos";
