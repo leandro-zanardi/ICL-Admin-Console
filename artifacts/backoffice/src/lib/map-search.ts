@@ -9,10 +9,27 @@ export function buscarPins(pins: MapaPin[], busca: string) {
   if (!buscaNormalizada) return [];
 
   const somenteDigitos = busca.replace(/\D/g, "");
-  return pins.filter((pin) =>
-    normalizarBusca(`${pin.nome} ${pin.municipio ?? ""}`).includes(buscaNormalizada) ||
-    (!!somenteDigitos && (pin.cnpj ?? "").replace(/\D/g, "").includes(somenteDigitos)),
-  );
+  const buscaSoCnpj = /^[\d\s./-]+$/.test(busca.trim()) && !!somenteDigitos;
+  return pins
+    .filter((pin) =>
+      normalizarBusca(`${pin.nome} ${pin.municipio ?? ""}`).includes(buscaNormalizada) ||
+      (!!somenteDigitos && (pin.cnpj ?? "").replace(/\D/g, "").includes(somenteDigitos)),
+    )
+    .sort((a, b) => {
+      const cnpjA = (a.cnpj ?? "").replace(/\D/g, "");
+      const cnpjB = (b.cnpj ?? "").replace(/\D/g, "");
+      const nomeA = normalizarBusca(a.nome);
+      const nomeB = normalizarBusca(b.nome);
+      const exatoA = (buscaSoCnpj && cnpjA === somenteDigitos) || nomeA === buscaNormalizada;
+      const exatoB = (buscaSoCnpj && cnpjB === somenteDigitos) || nomeB === buscaNormalizada;
+
+      if (exatoA !== exatoB) return exatoA ? -1 : 1;
+
+      return nomeA.localeCompare(nomeB, "pt-BR") ||
+        normalizarBusca(a.municipio ?? "").localeCompare(normalizarBusca(b.municipio ?? ""), "pt-BR") ||
+        cnpjA.localeCompare(cnpjB) ||
+        a.postoId.localeCompare(b.postoId);
+    });
 }
 
 export function criarParametrosMapa({ dias, categoria, status }: { dias: string; categoria: string; status: string }): GetMapaParams {
