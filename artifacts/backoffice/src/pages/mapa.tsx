@@ -7,10 +7,10 @@ import { SelectBox, ErrorState, SkeletonRows, Field } from "@/components/kit";
 import { SeloIcl } from "@/components/badges";
 import { DenunciaRows, CheckinRows } from "@/components/lists";
 import { CATEGORIAS, STATUS, fmtNum, opts } from "@/lib/format";
+import { buscarPins, criarParametrosMapa, obterEstadoPostoSelecionado, selecionarResultadoBusca } from "@/lib/map-search";
 import { cn } from "@/lib/utils";
 
 const DIAS = [{ value: "7", label: "7 dias" }, { value: "30", label: "30 dias" }, { value: "90", label: "90 dias" }, { value: "180", label: "180 dias" }, { value: "365", label: "12 meses" }];
-const normalizarBusca = (valor: string) => valor.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
 
 export default function Mapa() {
   const [dias, setDias] = useState("30");
@@ -20,21 +20,14 @@ export default function Mapa() {
   const [sel, setSel] = useState<string | null>(null);
   const [focusVersion, setFocusVersion] = useState(0);
   const [tab, setTab] = useState<"denuncias" | "checkins">("denuncias");
-  const params = useMemo(() => ({ dias: Number(dias), categoria: categoria || undefined, status: status || undefined }), [dias, categoria, status]);
+  const params = useMemo(() => criarParametrosMapa({ dias, categoria, status }), [dias, categoria, status]);
   const q = useGetMapa(params);
-  const posto = useGetPosto(sel ?? "", { query: { enabled: !!sel, queryKey: getGetPostoQueryKey(sel ?? "") } });
+  const estadoPostoSelecionado = obterEstadoPostoSelecionado(sel);
+  const posto = useGetPosto(estadoPostoSelecionado.id, { query: { enabled: estadoPostoSelecionado.aberto, queryKey: getGetPostoQueryKey(estadoPostoSelecionado.id) } });
   const pins = useMemo(() => q.data?.pins ?? [], [q.data]);
   const calor = useMemo(() => q.data?.calor ?? [], [q.data]);
-  const buscaNormalizada = normalizarBusca(busca.trim());
-  const resultados = useMemo(() => {
-    if (!buscaNormalizada) return [];
-    const somenteDigitos = busca.replace(/\D/g, "");
-    return pins.filter((p) =>
-      normalizarBusca(`${p.nome} ${p.municipio ?? ""}`).includes(buscaNormalizada) ||
-      (!!somenteDigitos && (p.cnpj ?? "").replace(/\D/g, "").includes(somenteDigitos)),
-    );
-  }, [busca, buscaNormalizada, pins]);
-  const pin = pins.find((p) => p.postoId === sel);
+  const resultados = useMemo(() => buscarPins(pins, busca), [busca, pins]);
+  const pin = pins.find((p) => p.postoId === estadoPostoSelecionado.id);
 
   return (
     <div className="relative h-[calc(100dvh-49px)] md:h-[100dvh]">
@@ -65,7 +58,7 @@ export default function Mapa() {
                 className="h-full min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
               />
             </div>
-            {!!buscaNormalizada && (
+            {!!busca.trim() && (
               <ul data-testid="list-resultados-busca-posto" className="absolute inset-x-0 top-full z-[800] mt-1 max-h-64 overflow-y-auto rounded-md border border-border bg-card p-1 shadow-xl">
                 {resultados.length ? resultados.map((resultado) => (
                   <li key={resultado.postoId}>
@@ -73,10 +66,11 @@ export default function Mapa() {
                       type="button"
                       data-testid={`button-resultado-posto-${resultado.postoId}`}
                       onClick={() => {
-                        setSel(resultado.postoId);
-                        setTab("denuncias");
-                        setFocusVersion((version) => version + 1);
-                        setBusca("");
+                        const selection = selecionarResultadoBusca(resultado.postoId, focusVersion);
+                        setSel(selection.sel);
+                        setTab(selection.tab);
+                        setFocusVersion(selection.focusVersion);
+                        setBusca(selection.busca);
                       }}
                       className="w-full rounded px-2.5 py-2 text-left transition hover:bg-primary/10 focus-visible:bg-primary/10 focus-visible:outline-none"
                     >
@@ -135,8 +129,8 @@ export default function Mapa() {
         </div>
       )}
 
-      <aside className={cn("absolute inset-y-0 right-0 z-[700] flex w-full max-w-[420px] flex-col border-l border-border bg-background shadow-2xl transition-transform duration-300 ease-out", sel ? "translate-x-0" : "translate-x-full")}>
-        {sel && (
+      <aside className={cn("absolute inset-y-0 right-0 z-[700] flex w-full max-w-[420px] flex-col border-l border-border bg-background shadow-2xl transition-transform duration-300 ease-out", estadoPostoSelecionado.aberto ? "translate-x-0" : "translate-x-full")}>
+        {estadoPostoSelecionado.aberto && (
           <>
             <div className="flex items-start justify-between gap-2 border-b border-border bg-sidebar px-4 py-3 text-sidebar-foreground">
               <div className="min-w-0">
@@ -172,7 +166,7 @@ export default function Mapa() {
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   {tab === "denuncias" ? <DenunciaRows items={posto.data.denunciasLista} showPosto={false} /> : <CheckinRows items={posto.data.checkinsLista} />}
                 </div>
-                <Link href={`/postos/${sel}`} data-testid="link-posto-detalhe" className="flex items-center justify-center gap-1.5 border-t border-border bg-card py-3 text-[13px] font-semibold text-primary transition hover:bg-primary/5">Abrir ficha do posto <ArrowUpRight className="size-4" /></Link>
+                <Link href={`/postos/${estadoPostoSelecionado.id}`} data-testid="link-posto-detalhe" className="flex items-center justify-center gap-1.5 border-t border-border bg-card py-3 text-[13px] font-semibold text-primary transition hover:bg-primary/5">Abrir ficha do posto <ArrowUpRight className="size-4" /></Link>
               </div>
             )}
           </>

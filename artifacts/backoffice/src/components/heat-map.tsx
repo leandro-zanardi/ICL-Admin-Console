@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import L from "@/lib/leaflet-setup";
 import "leaflet.heat";
 import type { MapaPin, PontoCalor } from "@workspace/api-client-react";
+import { focarPostoNoMapa } from "@/lib/map-search";
 
 export function HeatMap({ pins, calor, selectedId, focusVersion, onSelect }: { pins: MapaPin[]; calor: PontoCalor[]; selectedId: string | null; focusVersion: number; onSelect: (id: string) => void }) {
   const el = useRef<HTMLDivElement>(null);
@@ -51,10 +52,7 @@ export function HeatMap({ pins, calor, selectedId, focusVersion, onSelect }: { p
   }, [pins, calor, selectedId]);
 
   useEffect(() => {
-    const p = pins.find((x) => x.postoId === selectedId);
-    if (p && map.current) {
-      map.current.flyTo([p.lat, p.lng], Math.max(map.current.getZoom(), 12), { animate: true, duration: 0.5 });
-    }
+    focarPostoNoMapa(map.current, pins, selectedId);
   }, [selectedId, pins, focusVersion]);
 
   return <div ref={el} data-testid="map-heat" className="absolute inset-0 z-0" />;
