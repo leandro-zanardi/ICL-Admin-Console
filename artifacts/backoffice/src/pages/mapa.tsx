@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { getGetPostoQueryKey, useGetMapa, useGetPosto } from "@workspace/api-client-react";
-import { ArrowUpRight, Layers, X } from "lucide-react";
+import { ArrowUpRight, Layers, Search, X } from "lucide-react";
 import { HeatMap } from "@/components/heat-map";
 import { SelectBox, ErrorState, SkeletonRows, Field } from "@/components/kit";
 import { SeloIcl } from "@/components/badges";
@@ -10,23 +10,35 @@ import { CATEGORIAS, STATUS, fmtNum, opts } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const DIAS = [{ value: "7", label: "7 dias" }, { value: "30", label: "30 dias" }, { value: "90", label: "90 dias" }, { value: "180", label: "180 dias" }, { value: "365", label: "12 meses" }];
+const normalizarBusca = (valor: string) => valor.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
 
 export default function Mapa() {
   const [dias, setDias] = useState("30");
   const [categoria, setCategoria] = useState("");
   const [status, setStatus] = useState("");
+  const [busca, setBusca] = useState("");
   const [sel, setSel] = useState<string | null>(null);
+  const [focusVersion, setFocusVersion] = useState(0);
   const [tab, setTab] = useState<"denuncias" | "checkins">("denuncias");
   const params = useMemo(() => ({ dias: Number(dias), categoria: categoria || undefined, status: status || undefined }), [dias, categoria, status]);
   const q = useGetMapa(params);
   const posto = useGetPosto(sel ?? "", { query: { enabled: !!sel, queryKey: getGetPostoQueryKey(sel ?? "") } });
   const pins = useMemo(() => q.data?.pins ?? [], [q.data]);
   const calor = useMemo(() => q.data?.calor ?? [], [q.data]);
+  const buscaNormalizada = normalizarBusca(busca.trim());
+  const resultados = useMemo(() => {
+    if (!buscaNormalizada) return [];
+    const somenteDigitos = busca.replace(/\D/g, "");
+    return pins.filter((p) =>
+      normalizarBusca(`${p.nome} ${p.municipio ?? ""}`).includes(buscaNormalizada) ||
+      (!!somenteDigitos && (p.cnpj ?? "").replace(/\D/g, "").includes(somenteDigitos)),
+    );
+  }, [busca, buscaNormalizada, pins]);
   const pin = pins.find((p) => p.postoId === sel);
 
   return (
     <div className="relative h-[calc(100dvh-49px)] md:h-[100dvh]">
-      <HeatMap pins={pins} calor={calor} selectedId={sel} onSelect={(id) => { setSel(id); setTab("denuncias"); }} />
+      <HeatMap pins={pins} calor={calor} selectedId={sel} focusVersion={focusVersion} onSelect={(id) => { setSel(id); setTab("denuncias"); }} />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 z-[500] flex flex-col gap-2 p-3 md:p-4">
         <div className="pointer-events-auto flex flex-wrap items-end gap-2.5 self-start rounded-md border border-card-border bg-card/95 p-3 shadow-lg backdrop-blur">
@@ -37,6 +49,51 @@ export default function Mapa() {
           <SelectBox testId="select-dias" label="Período" value={dias} onChange={setDias} options={DIAS} all={null} />
           <SelectBox testId="select-categoria" label="Categoria" value={categoria} onChange={setCategoria} options={opts(CATEGORIAS)} all="Todas" />
           <SelectBox testId="select-status" label="Status" value={status} onChange={setStatus} options={opts(STATUS)} />
+          <div className="relative w-full min-w-[220px] max-w-[320px]">
+            <label htmlFor="input-busca-posto" className="mb-1 block text-[10px] font-medium text-muted-foreground">Encontrar posto</label>
+            <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-2.5 focus-within:ring-1 focus-within:ring-ring">
+              <Search className="size-4 shrink-0 text-muted-foreground" />
+              <input
+                id="input-busca-posto"
+                data-testid="input-busca-posto"
+                type="search"
+                value={busca}
+                onChange={(event) => setBusca(event.target.value)}
+                placeholder="Nome, CNPJ ou município"
+                autoComplete="off"
+                aria-label="Buscar posto por nome, CNPJ ou município"
+                className="h-full min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
+              />
+            </div>
+            {!!buscaNormalizada && (
+              <ul data-testid="list-resultados-busca-posto" className="absolute inset-x-0 top-full z-[800] mt-1 max-h-64 overflow-y-auto rounded-md border border-border bg-card p-1 shadow-xl">
+                {resultados.length ? resultados.map((resultado) => (
+                  <li key={resultado.postoId}>
+                    <button
+                      type="button"
+                      data-testid={`button-resultado-posto-${resultado.postoId}`}
+                      onClick={() => {
+                        setSel(resultado.postoId);
+                        setTab("denuncias");
+                        setFocusVersion((version) => version + 1);
+                        setBusca("");
+                      }}
+                      className="w-full rounded px-2.5 py-2 text-left transition hover:bg-primary/10 focus-visible:bg-primary/10 focus-visible:outline-none"
+                    >
+                      <span className="block truncate text-[13px] font-semibold">{resultado.nome}</span>
+                      <span className="block truncate font-mono text-[10.5px] text-muted-foreground">
+                        {resultado.cnpj ?? "Sem CNPJ"} · {resultado.municipio ?? "Município não informado"}
+                      </span>
+                    </button>
+                  </li>
+                )) : (
+                  <li data-testid="text-busca-posto-sem-resultados" className="px-2.5 py-2 text-[12px] text-muted-foreground">
+                    Nenhum posto encontrado neste mapa.
+                  </li>
+                )}
+              </ul>
+            )}
+          </div>
         </div>
         <div className="pointer-events-auto flex gap-2 self-start">
           {[["Denúncias", q.data?.totalDenuncias], ["Check-ins", q.data?.totalCheckins], ["Postos cadastrados", q.data?.totalPostos]].map(([k, v]) => (

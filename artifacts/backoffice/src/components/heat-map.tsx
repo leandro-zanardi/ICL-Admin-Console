@@ -3,7 +3,7 @@ import L from "@/lib/leaflet-setup";
 import "leaflet.heat";
 import type { MapaPin, PontoCalor } from "@workspace/api-client-react";
 
-export function HeatMap({ pins, calor, selectedId, onSelect }: { pins: MapaPin[]; calor: PontoCalor[]; selectedId: string | null; onSelect: (id: string) => void }) {
+export function HeatMap({ pins, calor, selectedId, focusVersion, onSelect }: { pins: MapaPin[]; calor: PontoCalor[]; selectedId: string | null; focusVersion: number; onSelect: (id: string) => void }) {
   const el = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
   const layer = useRef<L.LayerGroup | null>(null);
@@ -52,8 +52,10 @@ export function HeatMap({ pins, calor, selectedId, onSelect }: { pins: MapaPin[]
 
   useEffect(() => {
     const p = pins.find((x) => x.postoId === selectedId);
-    if (p && map.current) map.current.panTo([p.lat, p.lng], { animate: true });
-  }, [selectedId, pins]);
+    if (p && map.current) {
+      map.current.flyTo([p.lat, p.lng], Math.max(map.current.getZoom(), 12), { animate: true, duration: 0.5 });
+    }
+  }, [selectedId, pins, focusVersion]);
 
   return <div ref={el} data-testid="map-heat" className="absolute inset-0 z-0" />;
 }

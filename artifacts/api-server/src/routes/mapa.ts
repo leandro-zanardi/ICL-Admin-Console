@@ -64,6 +64,7 @@ router.get("/mapa", async (req, res): Promise<void> => {
       {
         postoId: id,
         nome: posto.nome,
+        cnpj: posto.cnpj,
         bandeira: posto.bandeira,
         municipio: posto.municipio,
         lat: posto.lat,

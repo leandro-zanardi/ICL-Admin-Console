@@ -50,6 +50,7 @@ export const GetMapaResponse = zod.object({
   "pins": zod.array(zod.object({
   "postoId": zod.string(),
   "nome": zod.string(),
+  "cnpj": zod.string().nullable(),
   "bandeira": zod.string().nullish(),
   "municipio": zod.string().nullish(),
   "lat": zod.number(),

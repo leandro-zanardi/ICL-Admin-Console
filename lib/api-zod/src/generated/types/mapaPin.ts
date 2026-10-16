@@ -10,6 +10,8 @@ export interface MapaPin {
   postoId: string;
   nome: string;
   /** @nullable */
+  cnpj: string | null;
+  /** @nullable */
   bandeira?: string | null;
   /** @nullable */
   municipio?: string | null;

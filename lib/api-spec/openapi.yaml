@@ -692,6 +692,8 @@ components:
           type: string
         nome:
           type: string
+        cnpj:
+          type: [string, "null"]
         bandeira:
           type: [string, "null"]
         municipio:
@@ -710,7 +712,7 @@ components:
           type: integer
         seloIcl:
           type: boolean
-      required: [postoId, nome, lat, lng, denuncias, abertas, vencidas, checkins, seloIcl]
+      required: [postoId, nome, cnpj, lat, lng, denuncias, abertas, vencidas, checkins, seloIcl]
     Mapa:
       type: object
       properties:
